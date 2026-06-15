@@ -18,6 +18,13 @@ CLEAN=0
 TARGET=""
 TARGET_ARGS=()
 LANG_OVERRIDE="${PROTON_LANG:-}"
+EXPORT_SHORTCUTS_QUIET=0
+
+if [[ "$0" == */* ]]; then
+  SELF_PATH="$(realpath -m "$0")"
+else
+  SELF_PATH="$(command -v shorin-proton-wrapper || printf 'shorin-proton-wrapper')"
+fi
 
 RUNNER_TYPES=()
 RUNNER_SOURCES=()
@@ -42,6 +49,7 @@ Options:
   --init                  initialize prefix, default ~/.proton
   -p, --prefix DIR        prefix directory, initialize if needed
   --status                show prefix information
+  --export-shortcuts      export prefix .lnk shortcuts to the Linux application menu
   --list-runner           list installed runners
   --runner PATH|ge|dw     use specified runner
   --install ge|dw         install runner to ~/.local/share/proton/runners
@@ -78,6 +86,7 @@ usage_zh() {
   --init                  初始化，默认路径 ~/.proton
   -p, --prefix 目录       指定前置环境路径，若不存在则初始化
   --status                显示前置环境信息
+  --export-shortcuts      将前置环境中的 .lnk 快捷方式导出到 Linux 应用菜单
   --list-runner           列出已安装的运行器
   --runner 路径|ge|dw     指定运行器
   --install ge|dw         安装运行器，默认安装至 ~/.local/share/proton/runners
@@ -120,6 +129,7 @@ Prefix tools:
   shorin-proton-wrapper --init [-p DIR] [--runner PATH]
   shorin-proton-wrapper --winecfg [-p DIR] [--runner PATH]
   shorin-proton-wrapper --status [-p DIR] [--runner PATH]
+  shorin-proton-wrapper --export-shortcuts [-p DIR] [--runner PATH]
 
 Runner discovery:
   shorin-proton-wrapper --list-runner
@@ -170,6 +180,7 @@ usage_full_zh() {
   shorin-proton-wrapper --init [-p 目录] [--runner 路径]
   shorin-proton-wrapper --winecfg [-p 目录] [--runner 路径]
   shorin-proton-wrapper --status [-p 目录] [--runner 路径]
+  shorin-proton-wrapper --export-shortcuts [-p 目录] [--runner 路径]
 
 运行器发现:
   shorin-proton-wrapper --list-runner
@@ -1071,22 +1082,137 @@ open_winecfg() {
   fi
 }
 
+desktop_quote() {
+  local value="$1"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  value="${value//\$/\\\$}"
+  value="${value//\`/\\\`}"
+  printf '"%s"' "$value"
+}
+
+shortcut_id() {
+  local value="$1" hash
+  hash="$(printf '%s' "$value" | sha256sum | cut -d ' ' -f 1)"
+  printf 'shorin-proton-wrapper-%s.desktop\n' "${hash:0:16}"
+}
+
+shortcut_name() {
+  local file="$1" name
+  name="$(basename "$file")"
+  name="${name%.[Ll][Nn][Kk]}"
+  printf '%s\n' "$name"
+}
+
+write_desktop_shortcut() {
+  local link="$1" app_dir desktop_file name wrapper_path runner_arg icon_path tmp
+  app_dir="$XDG_DATA_HOME_VALUE/applications"
+  desktop_file="$app_dir/$(shortcut_id "$PREFIX|$link")"
+  name="$(shortcut_name "$link")"
+  wrapper_path="$SELF_PATH"
+  runner_arg=""
+  if [[ -n "$RESOLVED_RUNNER_PATH" ]]; then
+    runner_arg=" --runner $(desktop_quote "$RESOLVED_RUNNER_PATH")"
+  fi
+  icon_path="/usr/share/icons/hicolor/scalable/apps/shorin-proton.svg"
+
+  mkdir -p "$app_dir"
+  tmp="$(mktemp "$app_dir/.shorin-proton-wrapper.XXXXXX")"
+  {
+    printf '[Desktop Entry]\n'
+    printf 'Type=Application\n'
+    printf 'Name=%s\n' "$name"
+    printf 'Exec=%s -p %s%s %s\n' "$(desktop_quote "$wrapper_path")" "$(desktop_quote "$PREFIX")" "$runner_arg" "$(desktop_quote "$link")"
+    if [[ -r "$icon_path" ]]; then
+      printf 'Icon=%s\n' "$icon_path"
+    else
+      printf 'Icon=application-x-ms-dos-executable\n'
+    fi
+    printf 'Terminal=false\n'
+    printf 'Categories=Game;\n'
+    printf 'StartupNotify=true\n'
+  } > "$tmp"
+
+  if [[ -r "$desktop_file" ]] && cmp -s "$tmp" "$desktop_file"; then
+    rm -f "$tmp"
+    return 0
+  fi
+
+  mv "$tmp" "$desktop_file"
+  printf 'Exported: %s\n' "$desktop_file"
+}
+
+export_shortcuts() {
+  local found link root
+  select_runner
+  ensure_initialized
+  found=0
+
+  shopt -s nullglob globstar
+  for root in \
+    "$PREFIX/pfx/drive_c/users"/*/Desktop \
+    "$PREFIX/pfx/drive_c/users"/*/Start\ Menu/Programs \
+    "$PREFIX/pfx/drive_c/ProgramData/Microsoft/Windows/Start Menu/Programs"; do
+    [[ -d "$root" ]] || continue
+    for link in "$root"/*.lnk "$root"/**/*.lnk; do
+      [[ -f "$link" ]] || continue
+      write_desktop_shortcut "$link"
+      found=1
+    done
+  done
+  shopt -u globstar nullglob
+
+  if [[ $found -eq 0 ]]; then
+    [[ $EXPORT_SHORTCUTS_QUIET -eq 1 ]] && return 0
+    die "no .lnk shortcuts found in prefix: $PREFIX"
+  fi
+
+  if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database "$XDG_DATA_HOME_VALUE/applications" >/dev/null 2>&1 || true
+  fi
+}
+
+auto_export_shortcuts() {
+  local old_quiet
+  old_quiet="$EXPORT_SHORTCUTS_QUIET"
+  EXPORT_SHORTCUTS_QUIET=1
+  export_shortcuts || true
+  EXPORT_SHORTCUTS_QUIET="$old_quiet"
+}
+
 run_target() {
-  local workdir exe
+  local workdir exe status
   select_runner
   ensure_initialized
 
   TARGET="$(expand_path "$TARGET")"
   [[ -e "$TARGET" ]] || die "target not found: $TARGET"
+
+  case "${TARGET,,}" in
+    *.lnk)
+      if [[ "$RESOLVED_RUNNER_TYPE" == "proton" ]]; then
+        exec_proton_command "$RESOLVED_RUNNER_PATH" waitforexitandrun start /unix "$TARGET" "${TARGET_ARGS[@]}"
+      else
+        exec_wine_command "$RESOLVED_RUNNER_PATH" start /unix "$TARGET" "${TARGET_ARGS[@]}"
+      fi
+      ;;
+  esac
+
   workdir="$(dirname "$TARGET")"
   exe="./$(basename "$TARGET")"
 
   cd "$workdir"
+  set +e
   if [[ "$RESOLVED_RUNNER_TYPE" == "proton" ]]; then
-    exec_proton_command "$RESOLVED_RUNNER_PATH" waitforexitandrun "$exe" "${TARGET_ARGS[@]}"
+    run_proton_command "$RESOLVED_RUNNER_PATH" waitforexitandrun "$exe" "${TARGET_ARGS[@]}"
+    status=$?
   else
-    exec_wine_command "$RESOLVED_RUNNER_PATH" "$exe" "${TARGET_ARGS[@]}"
+    run_wine_command "$RESOLVED_RUNNER_PATH" "$exe" "${TARGET_ARGS[@]}"
+    status=$?
   fi
+  set -e
+  auto_export_shortcuts
+  exit "$status"
 }
 
 show_status() {
@@ -1194,6 +1320,10 @@ parse_args() {
         ACTION="status"
         shift
         ;;
+      --export-shortcuts)
+        ACTION="export-shortcuts"
+        shift
+        ;;
       --init)
         ACTION="init"
         shift
@@ -1296,6 +1426,9 @@ case "$ACTION" in
     ;;
   status)
     show_status
+    ;;
+  export-shortcuts)
+    export_shortcuts
     ;;
   init)
     init_prefix
