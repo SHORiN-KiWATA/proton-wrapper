@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+exe="$1"
+
+if ! command -v zenity >/dev/null 2>&1; then
+  printf 'shorin-proton-select-prefix: zenity is required\n' >&2
+  exit 1
+fi
+
+prefix="$(zenity --file-selection --directory --title='Select Proton Prefix')" || exit 1
+
+exec shorin-proton -p "$prefix" "$exe"

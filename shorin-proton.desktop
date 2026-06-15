@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Shorin Proton
+Comment=Run Windows executables with Proton
+Exec=shorin-proton-select-prefix %f
+Icon=shorin-proton
+MimeType=application/x-ms-dos-executable;application/x-msdownload;
+Categories=Game;System;
+Terminal=false
+NoDisplay=false
