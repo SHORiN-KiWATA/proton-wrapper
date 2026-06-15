@@ -19,8 +19,11 @@ if [[ "$lang" == "zh" ]]; then
   err_wrapper_required="shorin-proton-wrapper-select: 需要 shorin-proton-wrapper"
   err_no_exe="shorin-proton-wrapper-select: 未提供可执行文件"
   err_zenity_required="shorin-proton-wrapper-select: 需要 zenity"
-  cached_text="已找到此程序的缓存环境："
-  action_column="操作"
+  cached_text="已找到此程序的缓存环境。"
+  cache_program_label="程序"
+  cache_prefix_label="前置环境"
+  cache_runner_label="运行器"
+  cache_question="是否直接使用此环境运行？"
   action_run="直接运行"
   action_reselect="重新选择"
   action_cancel="取消"
@@ -34,8 +37,11 @@ else
   err_wrapper_required="shorin-proton-wrapper-select: shorin-proton-wrapper is required"
   err_no_exe="shorin-proton-wrapper-select: no executable provided"
   err_zenity_required="shorin-proton-wrapper-select: zenity is required"
-  cached_text="Cached environment found for:"
-  action_column="Action"
+  cached_text="Cached environment found."
+  cache_program_label="Program"
+  cache_prefix_label="Prefix"
+  cache_runner_label="Runner"
+  cache_question="Run with this environment?"
   action_run="Run"
   action_reselect="Reselect"
   action_cancel="Cancel"
@@ -83,26 +89,30 @@ read_cache() {
 }
 
 if read_cache; then
-  cache_message="$(printf '%s\n%s' "$cached_text" "$exe")"
+  cache_message="$(printf '%s\n\n%s: %s\n%s: %s\n%s: %s\n\n%s' \
+    "$cached_text" \
+    "$cache_program_label" "$exe" \
+    "$cache_prefix_label" "$cache_prefix" \
+    "$cache_runner_label" "$cache_runner" \
+    "$cache_question")"
+  set +e
   action="$(zenity \
-    --list \
+    --question \
     --title="$title" \
     --text="$cache_message" \
-    --width=760 \
-    --height=260 \
-    --column="$action_column" \
-    --hide-header \
-    "$action_run" \
-    "$action_reselect" \
-    "$action_cancel")" || exit 1
-  case "$action" in
-    "$action_run")
-      exec "$wrapper" -p "$cache_prefix" --runner "$cache_runner" "$exe"
-      ;;
-    "$action_cancel"|"")
-      exit 0
-      ;;
-  esac
+    --width=820 \
+    --ok-label="$action_run" \
+    --cancel-label="$action_cancel" \
+    --extra-button="$action_reselect")"
+  status=$?
+  set -e
+  if [[ "$action" == "$action_reselect" ]]; then
+    :
+  elif [[ $status -eq 0 ]]; then
+    exec "$wrapper" -p "$cache_prefix" --runner "$cache_runner" "$exe"
+  else
+    exit 0
+  fi
 fi
 
 prefix="$(zenity --file-selection --directory --title="$title")" || exit 1
