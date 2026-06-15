@@ -1,10 +1,10 @@
 [Desktop Entry]
 Type=Application
-Name=Shorin Proton
+Name=Proton Run Windows Program
+Name[zh_CN]=用Proton运行Windows程序
 Comment=Run Windows executables with Proton
-Exec=shorin-proton-select-prefix %f
+Exec=shorin-proton-wrapper %f
 Icon=shorin-proton
 MimeType=application/x-ms-dos-executable;application/x-msdownload;
-Categories=Game;System;
 Terminal=false
-NoDisplay=false
+NoDisplay=true

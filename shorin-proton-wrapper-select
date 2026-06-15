@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+exe="${1:-}"
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+wrapper="shorin-proton-wrapper"
+
+if [[ -x "$script_dir/shorin-proton-wrapper" ]]; then
+  wrapper="$script_dir/shorin-proton-wrapper"
+elif ! command -v shorin-proton-wrapper >/dev/null 2>&1; then
+  printf 'shorin-proton-wrapper-select: shorin-proton-wrapper is required\n' >&2
+  exit 1
+fi
+
+if [[ -z "$exe" ]]; then
+  printf 'shorin-proton-wrapper-select: no executable provided\n' >&2
+  exit 1
+fi
+
+if ! command -v zenity >/dev/null 2>&1; then
+  printf 'shorin-proton-wrapper-select: zenity is required\n' >&2
+  exit 1
+fi
+
+exe="$(realpath -m "$exe")"
+cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/shorin-proton-wrapper/associations"
+cache_key="$(printf '%s' "$exe" | sha256sum | cut -d ' ' -f 1)"
+cache_file="$cache_dir/$cache_key.conf"
+
+read_cache() {
+  local line
+  cache_prefix=""
+  cache_runner=""
+  [[ -r "$cache_file" ]] || return 1
+  while IFS= read -r line; do
+    case "$line" in
+      prefix=*) cache_prefix="${line#prefix=}" ;;
+      runner=*) cache_runner="${line#runner=}" ;;
+    esac
+  done < "$cache_file"
+  [[ -n "$cache_prefix" && -n "$cache_runner" && -d "$cache_prefix" && -x "$cache_runner" ]]
+}
+
+if read_cache; then
+  action="$(zenity \
+    --list \
+    --title='Shorin Proton Wrapper' \
+    --text="Cached environment found for:\n$exe" \
+    --width=760 \
+    --height=260 \
+    --column='Action' \
+    --hide-header \
+    'Run' \
+    'Reselect' \
+    'Cancel')" || exit 1
+  case "$action" in
+    Run)
+      exec "$wrapper" -p "$cache_prefix" --runner "$cache_runner" "$exe"
+      ;;
+    Cancel|"")
+      exit 0
+      ;;
+  esac
+fi
+
+prefix="$(zenity --file-selection --directory --title='Shorin Proton Wrapper')" || exit 1
+
+rows=()
+name=""
+type=""
+source=""
+while IFS= read -r line; do
+  if [[ "$line" != *:* ]]; then
+    name="${line#"${line%%[![:space:]]*}"}"
+    name="${name#\* }"
+  elif [[ "$line" == "      type:   "* ]]; then
+    type="${line#      type:   }"
+  elif [[ "$line" == "      source: "* ]]; then
+    source="${line#      source: }"
+  elif [[ "$line" == "      path:   "* ]]; then
+    path="${line#      path:   }"
+    rows+=("$name" "$type" "$source" "$path")
+  fi
+done < <("$wrapper" --list-runner)
+
+if [[ ${#rows[@]} -eq 0 ]]; then
+  zenity --error --title='Shorin Proton Wrapper' --text='No Proton or Wine runner found.'
+  exit 1
+fi
+
+runner="$(zenity \
+  --list \
+  --title='Shorin Proton Wrapper' \
+  --width=900 \
+  --height=420 \
+  --column='Name' \
+  --column='Type' \
+  --column='Source' \
+  --column='Path' \
+  --print-column=4 \
+  "${rows[@]}")" || exit 1
+
+mkdir -p "$cache_dir"
+{
+  printf 'exe=%s\n' "$exe"
+  printf 'prefix=%s\n' "$prefix"
+  printf 'runner=%s\n' "$runner"
+} > "$cache_file"
+
+exec "$wrapper" -p "$prefix" --runner "$runner" "$exe"

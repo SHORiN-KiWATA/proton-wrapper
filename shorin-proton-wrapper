@@ -36,58 +36,72 @@ ui_lang() {
 usage_en() {
   cat <<'EOF'
 Usage:
-  shorin-proton [options] app.exe [args...]
-  shorin-proton --init [options]
-  shorin-proton --winecfg [options]
-  shorin-proton --list-runner
-  shorin-proton --status
-  shorin-proton --download ge|dw [-d DIR]
-  shorin-proton -i ge|dw [--install-to local|steam|lutris]
+  shorin-proton-wrapper [options] app.exe [args...]
 
 Options:
-  -p, --prefix DIR       prefix directory, default ~/.proton
-  --runner PATH          runner path
-  -d, --directory DIR    download directory
-  -i, --install ge|dw    download and install a runner
-  --install-to TARGET    local, steam, or lutris
-  --version VERSION      release tag, default latest
-  --lang zh|en           override help/status language
-  --help-full            detailed help
+  --init                  initialize prefix, default ~/.proton
+  -p, --prefix DIR        prefix directory, initialize if needed
+  --status                show prefix information
+  --list-runner           list installed runners
+  --runner PATH|ge|dw     use specified runner
+  --install ge|dw         install runner to ~/.local/share/proton/runners
+  --install-steam ge|dw   install runner for Steam
+  --install-lutris ge|dw  install runner for Lutris
+  --download ge|dw        download runner only, default XDG download directory
+  --list-version ge|dw    list available runner versions
+  --version VERSION       use specific release tag, default latest
+  --update                update all installed Latest runners
+  --remove ge|dw          remove runner from ~/.local/share/proton/runners
+  --remove-steam ge|dw    remove runner from Steam
+  --remove-lutris ge|dw   remove runner from Lutris
+  --help-full             show detailed help
 
 Examples:
-  shorin-proton game.exe
-  shorin-proton -p ~/Games/game-prefix game.exe
-  shorin-proton --download ge
-  shorin-proton -i dw --install-to lutris
+  shorin-proton-wrapper --init
+  shorin-proton-wrapper /path/to/app.exe
+  shorin-proton-wrapper --runner /path/to/proton /path/to/app.exe
+  shorin-proton-wrapper -p /path/to/prefix /path/to/app.exe
+  shorin-proton-wrapper --install dw
+  shorin-proton-wrapper --install-steam dw
+  shorin-proton-wrapper --download ge --version GE-Proton10-34
+  shorin-proton-wrapper --list-version dw
+  shorin-proton-wrapper --update
 EOF
 }
 
 usage_zh() {
   cat <<'EOF'
 用法:
-  shorin-proton [选项] app.exe [参数...]
-  shorin-proton --init [选项]
-  shorin-proton --winecfg [选项]
-  shorin-proton --list-runner
-  shorin-proton --status
-  shorin-proton --download ge|dw [-d 目录]
-  shorin-proton -i ge|dw [--install-to local|steam|lutris]
+  shorin-proton-wrapper [选项] app.exe [参数...]
 
 选项:
-  -p, --prefix 目录      前置环境目录，默认 ~/.proton
-  --runner 路径          指定运行器
-  -d, --directory 目录   下载目录
-  -i, --install ge|dw    下载并安装运行器
-  --install-to 目标      local、steam 或 lutris
-  --version 版本         release 标签，默认 latest
-  --lang zh|en           指定帮助/状态语言
-  --help-full            显示完整说明
+  --init                  初始化，默认路径 ~/.proton
+  -p, --prefix 目录       指定前置环境路径，若不存在则初始化
+  --status                显示前置环境信息
+  --list-runner           列出已安装的运行器
+  --runner 路径|ge|dw     指定运行器
+  --install ge|dw         安装运行器，默认安装至 ~/.local/share/proton/runners
+  --install-steam ge|dw   给 Steam 安装运行器
+  --install-lutris ge|dw  给 Lutris 安装运行器
+  --download ge|dw        仅下载运行器，默认下载路径为 XDG 下载目录
+  --list-version ge|dw    列出可使用的运行器版本
+  --version 版本          指定特定版本，默认 latest
+  --update                升级所有已安装的 Latest 运行器
+  --remove ge|dw          移除默认位置中已安装的运行器
+  --remove-steam ge|dw    移除 Steam 中已安装的运行器
+  --remove-lutris ge|dw   移除 Lutris 中已安装的运行器
+  --help-full             显示完整说明
 
 示例:
-  shorin-proton game.exe
-  shorin-proton -p ~/Games/game-prefix game.exe
-  shorin-proton --download ge
-  shorin-proton -i dw --install-to lutris
+  shorin-proton-wrapper --init
+  shorin-proton-wrapper /path/to/app.exe
+  shorin-proton-wrapper --runner /path/to/proton /path/to/app.exe
+  shorin-proton-wrapper -p /path/to/prefix /path/to/app.exe
+  shorin-proton-wrapper --install dw
+  shorin-proton-wrapper --install-steam dw
+  shorin-proton-wrapper --download ge --version GE-Proton10-34
+  shorin-proton-wrapper --list-version dw
+  shorin-proton-wrapper --update
 EOF
 }
 
@@ -98,25 +112,36 @@ Concepts:
   runner   Proton or Wine runtime for Windows executables
 
 Run:
-  shorin-proton app.exe [args...]
-  shorin-proton -p ~/Games/game-prefix app.exe
-  shorin-proton --runner /path/to/proton app.exe
+  shorin-proton-wrapper app.exe [args...]
+  shorin-proton-wrapper -p ~/Games/game-prefix app.exe
+  shorin-proton-wrapper --runner /path/to/proton app.exe
 
 Prefix tools:
-  shorin-proton --init [-p DIR] [--runner PATH]
-  shorin-proton --winecfg [-p DIR] [--runner PATH]
-  shorin-proton --status [-p DIR] [--runner PATH]
+  shorin-proton-wrapper --init [-p DIR] [--runner PATH]
+  shorin-proton-wrapper --winecfg [-p DIR] [--runner PATH]
+  shorin-proton-wrapper --status [-p DIR] [--runner PATH]
 
 Runner discovery:
-  shorin-proton --list-runner
+  shorin-proton-wrapper --list-runner
+  shorin-proton-wrapper --list-version ge|dw
 
 Download only:
-  shorin-proton --download ge [-d DIR] [--version TAG]
-  shorin-proton --download dw [-d DIR] [--version TAG]
+  shorin-proton-wrapper --download ge [-d DIR] [--version TAG]
+  shorin-proton-wrapper --download dw [-d DIR] [--version TAG]
 
 Install runner:
-  shorin-proton -i ge [-d DIR] [--install-to local|steam|lutris]
-  shorin-proton -i dw [-d DIR] [--install-dir DIR]
+  shorin-proton-wrapper --install ge [-d DIR] [--version TAG]
+  shorin-proton-wrapper --install dw [-d DIR] [--version TAG]
+  shorin-proton-wrapper --install-steam ge|dw
+  shorin-proton-wrapper --install-lutris ge|dw
+
+Update runners:
+  shorin-proton-wrapper --update
+
+Remove runner:
+  shorin-proton-wrapper --remove ge|dw
+  shorin-proton-wrapper --remove-steam ge|dw
+  shorin-proton-wrapper --remove-lutris ge|dw
 
 Install targets:
   local   ~/.local/share/proton/runners
@@ -137,25 +162,36 @@ usage_full_zh() {
   runner   运行器 (Proton 或 Wine)
 
 运行:
-  shorin-proton app.exe [参数...]
-  shorin-proton -p ~/Games/game-prefix app.exe
-  shorin-proton --runner /path/to/proton app.exe
+  shorin-proton-wrapper app.exe [参数...]
+  shorin-proton-wrapper -p ~/Games/game-prefix app.exe
+  shorin-proton-wrapper --runner /path/to/proton app.exe
 
 前置环境:
-  shorin-proton --init [-p 目录] [--runner 路径]
-  shorin-proton --winecfg [-p 目录] [--runner 路径]
-  shorin-proton --status [-p 目录] [--runner 路径]
+  shorin-proton-wrapper --init [-p 目录] [--runner 路径]
+  shorin-proton-wrapper --winecfg [-p 目录] [--runner 路径]
+  shorin-proton-wrapper --status [-p 目录] [--runner 路径]
 
 运行器发现:
-  shorin-proton --list-runner
+  shorin-proton-wrapper --list-runner
+  shorin-proton-wrapper --list-version ge|dw
 
 只下载:
-  shorin-proton --download ge [-d 目录] [--version 标签]
-  shorin-proton --download dw [-d 目录] [--version 标签]
+  shorin-proton-wrapper --download ge [-d 目录] [--version 标签]
+  shorin-proton-wrapper --download dw [-d 目录] [--version 标签]
 
 安装运行器:
-  shorin-proton -i ge [-d 目录] [--install-to local|steam|lutris]
-  shorin-proton -i dw [-d 目录] [--install-dir 目录]
+  shorin-proton-wrapper --install ge [-d 目录] [--version 标签]
+  shorin-proton-wrapper --install dw [-d 目录] [--version 标签]
+  shorin-proton-wrapper --install-steam ge|dw
+  shorin-proton-wrapper --install-lutris ge|dw
+
+更新运行器:
+  shorin-proton-wrapper --update
+
+移除运行器:
+  shorin-proton-wrapper --remove ge|dw
+  shorin-proton-wrapper --remove-steam ge|dw
+  shorin-proton-wrapper --remove-lutris ge|dw
 
 安装目标:
   local   ~/.local/share/proton/runners
@@ -186,7 +222,7 @@ usage_full() {
 }
 
 die() {
-  printf 'shorin-proton: %s\n' "$*" >&2
+  printf 'shorin-proton-wrapper: %s\n' "$*" >&2
   exit 1
 }
 
@@ -358,10 +394,10 @@ collect_runners() {
   add_proton_paths local "$LOCAL_RUNNER_DIR"/*/proton
 
   add_proton_paths steam-compat \
-    "$HOME/.local/share/Steam/compatibilitytools.d/Proton-GE Latest/proton" \
-    "$HOME/.steam/root/compatibilitytools.d/Proton-GE Latest/proton" \
     "$HOME/.local/share/Steam/compatibilitytools.d/DW-Proton Latest/proton" \
-    "$HOME/.steam/root/compatibilitytools.d/DW-Proton Latest/proton"
+    "$HOME/.steam/root/compatibilitytools.d/DW-Proton Latest/proton" \
+    "$HOME/.local/share/Steam/compatibilitytools.d/Proton-GE Latest/proton" \
+    "$HOME/.steam/root/compatibilitytools.d/Proton-GE Latest/proton"
   add_proton_paths steam-compat \
     "$HOME/.local/share/Steam/compatibilitytools.d"/*/proton \
     "$HOME/.steam/root/compatibilitytools.d"/*/proton
@@ -396,11 +432,17 @@ RESOLVED_RUNNER_TYPE=""
 RESOLVED_RUNNER_PATH=""
 
 try_resolve_runner_arg() {
-  local input path base root
+  local input path base root product
   input="$1"
-  path="$(expand_path "$input")"
   RESOLVED_RUNNER_TYPE=""
   RESOLVED_RUNNER_PATH=""
+
+  if product="$(runner_product_alias "$input")"; then
+    try_resolve_runner_product "$product"
+    return $?
+  fi
+
+  path="$(expand_path "$input")"
 
   if [[ -d "$path" && -x "$path/proton" ]]; then
     RESOLVED_RUNNER_TYPE="proton"
@@ -435,6 +477,30 @@ try_resolve_runner_arg() {
   return 1
 }
 
+try_resolve_runner_from_prefix() {
+  local config_line runner_root
+  RESOLVED_RUNNER_TYPE=""
+  RESOLVED_RUNNER_PATH=""
+
+  [[ -r "$PREFIX/config_info" ]] || return 1
+  config_line="$(sed -n '2p' "$PREFIX/config_info")"
+  [[ -n "$config_line" ]] || return 1
+
+  runner_root="$(dirname "$(dirname "$(dirname "$config_line")")")"
+  if [[ -x "$runner_root/proton" ]]; then
+    RESOLVED_RUNNER_TYPE="proton"
+    RESOLVED_RUNNER_PATH="$(realpath -m "$runner_root/proton")"
+    return 0
+  fi
+  if [[ -x "$runner_root/bin/wine" ]]; then
+    RESOLVED_RUNNER_TYPE="wine"
+    RESOLVED_RUNNER_PATH="$(realpath -m "$runner_root/bin/wine")"
+    return 0
+  fi
+
+  return 1
+}
+
 resolve_runner_arg() {
   try_resolve_runner_arg "$1" || die "runner not found or unsupported: $1"
 }
@@ -443,6 +509,10 @@ try_select_runner() {
   if [[ -n "$RUNNER_ARG" ]]; then
     try_resolve_runner_arg "$RUNNER_ARG"
     return $?
+  fi
+
+  if try_resolve_runner_from_prefix; then
+    return 0
   fi
 
   collect_runners
@@ -456,7 +526,7 @@ try_select_runner() {
 }
 
 select_runner() {
-  try_select_runner || die "no Proton or Wine runner found. Use --runner PATH, or install one with proton -i ge"
+  try_select_runner || die "no Proton or Wine runner found. Use --runner PATH, or install one with shorin-proton-wrapper --install dw"
 }
 
 list_runners() {
@@ -477,12 +547,14 @@ list_runners() {
   fi
 
   for i in "${!RUNNER_PATHS[@]}"; do
-    mark=" "
     if [[ "${RUNNER_PATHS[$i]}" == "$selected_path" ]]; then
-      mark="*"
+      printf '  * %s\n' "${RUNNER_NAMES[$i]}"
+    else
+      printf '    %s\n' "${RUNNER_NAMES[$i]}"
     fi
-    printf '%s %-7s %-14s %s\n' "$mark" "${RUNNER_TYPES[$i]}" "${RUNNER_SOURCES[$i]}" "${RUNNER_NAMES[$i]}"
-    printf '  %s\n' "${RUNNER_PATHS[$i]}"
+    printf '      type:   %s\n' "${RUNNER_TYPES[$i]}"
+    printf '      source: %s\n' "${RUNNER_SOURCES[$i]}"
+    printf '      path:   %s\n' "${RUNNER_PATHS[$i]}"
   done
 }
 
@@ -501,12 +573,99 @@ normalize_product() {
   esac
 }
 
+runner_dir_name() {
+  local product="$1"
+  case "$product" in
+    ge) printf 'Proton-GE Latest' ;;
+    dw) printf 'DW-Proton Latest' ;;
+    *) die "unknown runner product: $product" ;;
+  esac
+}
+
+runner_product_alias() {
+  local product="${1,,}"
+  case "$product" in
+    ge|ge-proton|proton-ge)
+      printf 'ge\n'
+      ;;
+    dw|dwproton|dw-proton|dw_proton)
+      printf 'dw\n'
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+try_resolve_runner_product() {
+  local product="$1" name path
+  name="$(runner_dir_name "$product")"
+
+  for path in \
+    "$LOCAL_RUNNER_DIR/$name/proton" \
+    "$HOME/.local/share/Steam/compatibilitytools.d/$name/proton" \
+    "$HOME/.steam/root/compatibilitytools.d/$name/proton" \
+    "$HOME/.local/share/lutris/runners/proton/$name/proton" \
+    "$HOME/.local/share/lutris/runners/wine/$name/proton" \
+    "$HOME/.var/app/net.lutris.Lutris/data/lutris/runners/proton/$name/proton" \
+    "$HOME/.var/app/net.lutris.Lutris/data/lutris/runners/wine/$name/proton"; do
+    if [[ -x "$path" ]]; then
+      RESOLVED_RUNNER_TYPE="proton"
+      RESOLVED_RUNNER_PATH="$(realpath -m "$path")"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+list_versions() {
+  local product="$1"
+  product="$(normalize_product "$product")"
+  python3 - "$product" <<'PY'
+import json
+import sys
+import urllib.request
+import urllib.error
+
+product = sys.argv[1]
+
+if product == "ge":
+    url = "https://api.github.com/repos/GloriousEggroll/proton-ge-custom/releases?per_page=20"
+elif product == "dw":
+    url = "https://dawn.wine/api/v1/repos/dawn-winery/dwproton/releases?limit=20"
+else:
+    raise SystemExit(f"unknown product: {product}")
+
+request = urllib.request.Request(url, headers={"User-Agent": "proton-cli"})
+try:
+    with urllib.request.urlopen(request, timeout=30) as response:
+        data = json.load(response)
+except urllib.error.HTTPError as exc:
+    raise SystemExit(f"failed to fetch version list: HTTP {exc.code}")
+except urllib.error.URLError as exc:
+    raise SystemExit(f"failed to fetch version list: {exc.reason}")
+
+if isinstance(data, dict):
+    data = [data]
+
+for release in data:
+    tag = release.get("tag_name") or release.get("name") or ""
+    if not tag:
+        continue
+    published = release.get("published_at") or release.get("created_at") or ""
+    published = published[:10]
+    print(f"{tag}  {published}")
+PY
+}
+
 release_info() {
   local product="$1" version="$2"
   python3 - "$product" "$version" <<'PY'
 import json
 import sys
 import urllib.request
+import urllib.error
 
 product = sys.argv[1]
 version = sys.argv[2]
@@ -529,8 +688,13 @@ else:
     raise SystemExit(f"unknown product: {product}")
 
 request = urllib.request.Request(url, headers={"User-Agent": "proton-cli"})
-with urllib.request.urlopen(request, timeout=30) as response:
-    data = json.load(response)
+try:
+    with urllib.request.urlopen(request, timeout=30) as response:
+        data = json.load(response)
+except urllib.error.HTTPError as exc:
+    raise SystemExit(f"release not found for {product} {version}: HTTP {exc.code}")
+except urllib.error.URLError as exc:
+    raise SystemExit(f"failed to fetch release info for {product} {version}: {exc.reason}")
 
 assets = data.get("assets") or []
 tag = data.get("tag_name") or data.get("name") or version
@@ -605,14 +769,13 @@ find_extracted_runner_root() {
 }
 
 download_runner() {
-  local product info tag archive_name archive_url checksum_name checksum_url dir
+  local product info tag archive_name archive_url checksum_name checksum_url dir release_output
   product="$(normalize_product "$PRODUCT")"
-  mapfile -t info < <(release_info "$product" "$VERSION")
-  tag="${info[0]}"
-  archive_name="${info[1]}"
-  archive_url="${info[2]}"
-  checksum_name="${info[3]}"
-  checksum_url="${info[4]}"
+  info=()
+  release_output="$(release_info "$product" "$VERSION" 2>&1)" || die "$release_output"
+  mapfile -t info <<< "$release_output"
+  tag="${info[0]:-}" archive_name="${info[1]:-}" archive_url="${info[2]:-}" checksum_name="${info[3]:-}" checksum_url="${info[4]:-}"
+  [[ -n "$tag" ]] || die "release not found for $product $VERSION"
   dir="$(expand_path "${DOWNLOAD_DIR:-$(xdg_download_dir)}")"
 
   mkdir -p "$dir"
@@ -627,17 +790,17 @@ download_runner() {
 }
 
 install_runner() {
-  local product info tag archive_name archive_url checksum_name checksum_url download_dir install_dir work_dir use_existing extract_dir root target temp_download_dir
+  local product info tag archive_name archive_url checksum_name checksum_url download_dir install_dir work_dir use_existing extract_dir root target temp_download_dir dir_name release_output
   product="$(normalize_product "$PRODUCT")"
-  mapfile -t info < <(release_info "$product" "$VERSION")
-  tag="${info[0]}"
-  archive_name="${info[1]}"
-  archive_url="${info[2]}"
-  checksum_name="${info[3]}"
-  checksum_url="${info[4]}"
+  info=()
+  release_output="$(release_info "$product" "$VERSION" 2>&1)" || die "$release_output"
+  mapfile -t info <<< "$release_output"
+  tag="${info[0]:-}" archive_name="${info[1]:-}" archive_url="${info[2]:-}" checksum_name="${info[3]:-}" checksum_url="${info[4]:-}"
+  [[ -n "$tag" ]] || die "release not found for $product $VERSION"
   download_dir="$(expand_path "${DOWNLOAD_DIR:-$(xdg_download_dir)}")"
   install_dir="$(expand_path "${INSTALL_DIR:-$(default_install_dir)}")"
-  target="$install_dir/$tag"
+  dir_name="$(runner_dir_name "$product")"
+  target="$install_dir/$dir_name"
 
   mkdir -p "$download_dir" "$install_dir"
 
@@ -655,22 +818,14 @@ install_runner() {
 
   verify_archive "$work_dir" "$checksum_name"
 
-  if [[ -e "$target" ]]; then
-    if [[ -x "$target/proton" ]]; then
-      printf 'Already installed: %s\n' "$target/proton"
-      if [[ $use_existing -eq 0 ]]; then
-        rm -rf "$work_dir"
-      elif [[ $CLEAN -eq 1 ]]; then
-        rm -f "$download_dir/$archive_name" "$download_dir/$checksum_name"
-      fi
-      return 0
-    fi
-    die "install target exists but is not a runner: $target"
-  fi
-
   extract_dir="$(mktemp -d)"
   tar -xf "$work_dir/$archive_name" -C "$extract_dir"
   root="$(find_extracted_runner_root "$extract_dir")" || die "extracted archive does not contain a proton runner"
+  if [[ -e "$target" && ! -x "$target/proton" ]]; then
+    rm -rf "$extract_dir"
+    die "install target exists but is not a runner: $target"
+  fi
+  rm -rf "$target"
   mv "$root" "$target"
   rm -rf "$extract_dir"
 
@@ -681,6 +836,52 @@ install_runner() {
   fi
 
   printf 'Installed: %s\n' "$target/proton"
+}
+
+update_runner() {
+  local product target install_to_old updated
+  install_to_old="$INSTALL_TO"
+  updated=0
+
+  for INSTALL_TO in local steam lutris; do
+    for product in ge dw; do
+      PRODUCT="$product"
+      target="$(expand_path "$(default_install_dir)")/$(runner_dir_name "$product")"
+      if [[ -e "$target" ]]; then
+        printf 'Updating: %s\n' "$target"
+        install_runner
+        updated=1
+      fi
+    done
+  done
+
+  INSTALL_TO="$install_to_old"
+  [[ $updated -eq 1 ]] || die "no installed Latest runners found"
+}
+
+remove_runner() {
+  local product dir_name install_dir target lang
+  product="$(normalize_product "$PRODUCT")"
+  dir_name="$(runner_dir_name "$product")"
+  install_dir="$(expand_path "${INSTALL_DIR:-$(default_install_dir)}")"
+  target="$install_dir/$dir_name"
+  lang="$(ui_lang)"
+
+  if [[ ! -e "$target" ]]; then
+    if [[ "$lang" == "zh" ]]; then
+      die "$dir_name 未安装"
+    else
+      die "$dir_name is not installed"
+    fi
+  fi
+
+  rm -rf "$target"
+
+  if [[ "$lang" == "zh" ]]; then
+    printf '已移除: %s\n' "$target"
+  else
+    printf 'Removed: %s\n' "$target"
+  fi
 }
 
 run_proton_command() {
@@ -835,20 +1036,14 @@ parse_args() {
         [[ $# -ge 2 ]] || die "$1 requires a path"
         RUNNER_ARG="$2"
         shift 2
+        while [[ $# -gt 0 && ! "$1" =~ ^- ]] && ! [[ -e "$RUNNER_ARG" || "$RUNNER_ARG" == */proton || "$RUNNER_ARG" == */wine || "$RUNNER_ARG" == */wine64 ]]; do
+          RUNNER_ARG="$RUNNER_ARG $1"
+          shift
+        done
         ;;
       -d|--directory)
         [[ $# -ge 2 ]] || die "$1 requires a directory"
         DOWNLOAD_DIR="$2"
-        shift 2
-        ;;
-      --install-dir)
-        [[ $# -ge 2 ]] || die "$1 requires a directory"
-        INSTALL_DIR="$2"
-        shift 2
-        ;;
-      --install-to)
-        [[ $# -ge 2 ]] || die "$1 requires a target"
-        INSTALL_TO="$2"
         shift 2
         ;;
       --version)
@@ -863,6 +1058,12 @@ parse_args() {
       --list-runner)
         ACTION="list"
         shift
+        ;;
+      --list-version)
+        [[ $# -ge 2 ]] || die "$1 requires ge or dw"
+        ACTION="list-version"
+        PRODUCT="$2"
+        shift 2
         ;;
       --status)
         ACTION="status"
@@ -882,10 +1083,48 @@ parse_args() {
         PRODUCT="$2"
         shift 2
         ;;
-      -i|--install)
+      --install)
         [[ $# -ge 2 ]] || die "$1 requires ge or dw"
         ACTION="install"
         PRODUCT="$2"
+        shift 2
+        ;;
+      --install-steam)
+        [[ $# -ge 2 ]] || die "$1 requires ge or dw"
+        ACTION="install"
+        PRODUCT="$2"
+        INSTALL_TO="steam"
+        shift 2
+        ;;
+      --install-lutris)
+        [[ $# -ge 2 ]] || die "$1 requires ge or dw"
+        ACTION="install"
+        PRODUCT="$2"
+        INSTALL_TO="lutris"
+        shift 2
+        ;;
+      --update)
+        ACTION="update"
+        shift
+        ;;
+      --remove)
+        [[ $# -ge 2 ]] || die "$1 requires ge or dw"
+        ACTION="remove"
+        PRODUCT="$2"
+        shift 2
+        ;;
+      --remove-steam)
+        [[ $# -ge 2 ]] || die "$1 requires ge or dw"
+        ACTION="remove"
+        PRODUCT="$2"
+        INSTALL_TO="steam"
+        shift 2
+        ;;
+      --remove-lutris)
+        [[ $# -ge 2 ]] || die "$1 requires ge or dw"
+        ACTION="remove"
+        PRODUCT="$2"
+        INSTALL_TO="lutris"
         shift 2
         ;;
       --)
@@ -919,6 +1158,9 @@ case "$ACTION" in
   list)
     list_runners
     ;;
+  list-version)
+    list_versions "$PRODUCT"
+    ;;
   status)
     show_status
     ;;
@@ -933,6 +1175,12 @@ case "$ACTION" in
     ;;
   install)
     install_runner
+    ;;
+  update)
+    update_runner
+    ;;
+  remove)
+    remove_runner
     ;;
   "")
     [[ -n "$TARGET" ]] || die "no target provided"
