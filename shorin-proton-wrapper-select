@@ -1,163 +1,384 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/usr/bin/env python3
+import hashlib
+import locale
+import os
+import subprocess
+import sys
+import warnings
+from pathlib import Path
+from urllib.parse import unquote, urlparse
 
-exe="${1:-}"
-script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-wrapper="shorin-proton-wrapper"
+import gi
 
-ui_lang() {
-  local locale="${PROTON_LANG:-${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}}"
-  case "${locale,,}" in
-    zh|zh_*|zh.*|zh-*) printf 'zh\n' ;;
-    *) printf 'en\n' ;;
-  esac
+gi.require_version("Gtk", "4.0")
+gi.require_version("Gdk", "4.0")
+from gi.repository import Gdk, Gio, Gtk
+
+
+def is_zh() -> bool:
+    value = (
+        os.environ.get("PROTON_LANG")
+        or os.environ.get("LC_ALL")
+        or os.environ.get("LC_MESSAGES")
+        or os.environ.get("LANG")
+        or locale.getlocale()[0]
+        or ""
+    )
+    return value.lower().startswith("zh")
+
+
+ZH = is_zh()
+TEXT = {
+    "title": "运行 Windows 软件" if ZH else "Run Windows Software",
+    "cached_title": "已保存的运行环境" if ZH else "Cached environment",
+    "cached_question": "是否直接使用此环境运行？" if ZH else "Run with this environment?",
+    "program": "程序" if ZH else "Program",
+    "prefix": "前置环境" if ZH else "Prefix",
+    "runner": "运行器" if ZH else "Runner",
+    "program_desc": "将要运行的 Windows 程序" if ZH else "Windows program to run",
+    "prefix_desc": "选择或输入此程序使用的 Proton 前置环境目录" if ZH else "Choose or enter the Proton prefix directory for this program",
+    "runner_desc": "选择用于启动此程序的 Proton 或 Wine 运行器" if ZH else "Choose the Proton or Wine runner used to launch this program",
+    "run": "直接运行" if ZH else "Run",
+    "reselect": "重新选择" if ZH else "Reselect",
+    "cancel": "取消" if ZH else "Cancel",
+    "choose_env": "选择运行环境" if ZH else "Choose runtime environment",
+    "browse": "浏览" if ZH else "Browse",
+    "no_runner": "没有找到 Proton 或 Wine 运行器。" if ZH else "No Proton or Wine runner found.",
+    "select_prefix": "请选择前置环境目录。" if ZH else "Select a prefix directory.",
+    "select_runner": "请选择运行器。" if ZH else "Select a runner.",
+    "no_exe_error": "shorin-proton-wrapper-select: 未提供可执行文件" if ZH else "shorin-proton-wrapper-select: no executable provided",
 }
 
-lang="$(ui_lang)"
-if [[ "$lang" == "zh" ]]; then
-  title="运行 Windows 软件"
-  err_wrapper_required="shorin-proton-wrapper-select: 需要 shorin-proton-wrapper"
-  err_no_exe="shorin-proton-wrapper-select: 未提供可执行文件"
-  err_zenity_required="shorin-proton-wrapper-select: 需要 zenity"
-  cached_text="已找到此程序的缓存环境。"
-  cache_program_label="程序"
-  cache_prefix_label="前置环境"
-  cache_runner_label="运行器"
-  cache_question="是否直接使用此环境运行？"
-  action_run="直接运行"
-  action_reselect="重新选择"
-  action_cancel="取消"
-  no_runner_text="没有找到 Proton 或 Wine 运行器。"
-  runner_name_column="名称"
-  runner_type_column="类型"
-  runner_source_column="来源"
-  runner_path_column="路径"
-else
-  title="Run Windows Software"
-  err_wrapper_required="shorin-proton-wrapper-select: shorin-proton-wrapper is required"
-  err_no_exe="shorin-proton-wrapper-select: no executable provided"
-  err_zenity_required="shorin-proton-wrapper-select: zenity is required"
-  cached_text="Cached environment found."
-  cache_program_label="Program"
-  cache_prefix_label="Prefix"
-  cache_runner_label="Runner"
-  cache_question="Run with this environment?"
-  action_run="Run"
-  action_reselect="Reselect"
-  action_cancel="Cancel"
-  no_runner_text="No Proton or Wine runner found."
-  runner_name_column="Name"
-  runner_type_column="Type"
-  runner_source_column="Source"
-  runner_path_column="Path"
-fi
 
-if [[ -x "$script_dir/shorin-proton-wrapper" ]]; then
-  wrapper="$script_dir/shorin-proton-wrapper"
-elif ! command -v shorin-proton-wrapper >/dev/null 2>&1; then
-  printf '%s\n' "$err_wrapper_required" >&2
-  exit 1
-fi
+def section(title: str, description: str | None = None):
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+    title_label = Gtk.Label(label=title, xalign=0)
+    title_label.add_css_class("heading")
+    box.append(title_label)
+    if description:
+        desc_label = Gtk.Label(label=description, xalign=0, wrap=True)
+        desc_label.add_css_class("dim-label")
+        box.append(desc_label)
+    return box
 
-if [[ -z "$exe" ]]; then
-  printf '%s\n' "$err_no_exe" >&2
-  exit 1
-fi
 
-if ! command -v zenity >/dev/null 2>&1; then
-  printf '%s\n' "$err_zenity_required" >&2
-  exit 1
-fi
-
-exe="$(realpath -m "$exe")"
-cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/shorin-proton-wrapper/associations"
-cache_key="$(printf '%s' "$exe" | sha256sum | cut -d ' ' -f 1)"
-cache_file="$cache_dir/$cache_key.conf"
-
-read_cache() {
-  local line
-  cache_prefix=""
-  cache_runner=""
-  [[ -r "$cache_file" ]] || return 1
-  while IFS= read -r line; do
-    case "$line" in
-      prefix=*) cache_prefix="${line#prefix=}" ;;
-      runner=*) cache_runner="${line#runner=}" ;;
-    esac
-  done < "$cache_file"
-  [[ -n "$cache_prefix" && -n "$cache_runner" && -d "$cache_prefix" && -x "$cache_runner" ]]
+def install_css():
+    provider = Gtk.CssProvider()
+    provider.load_from_data(b"""
+list.runner-list row:selected {
+  background-color: alpha(@accent_bg_color, 0.22);
+  background-image: none;
+  color: inherit;
 }
 
-if read_cache; then
-  cache_message="$(printf '%s\n\n%s: %s\n%s: %s\n%s: %s\n\n%s' \
-    "$cached_text" \
-    "$cache_program_label" "$exe" \
-    "$cache_prefix_label" "$cache_prefix" \
-    "$cache_runner_label" "$cache_runner" \
-    "$cache_question")"
-  set +e
-  action="$(zenity \
-    --question \
-    --title="$title" \
-    --icon=shorin-proton \
-    --text="$cache_message" \
-    --width=820 \
-    --ok-label="$action_run" \
-    --cancel-label="$action_cancel" \
-    --extra-button="$action_reselect")"
-  status=$?
-  set -e
-  if [[ "$action" == "$action_reselect" ]]; then
-    :
-  elif [[ $status -eq 0 ]]; then
-    exec "$wrapper" -p "$cache_prefix" --runner "$cache_runner" "$exe"
-  else
-    exit 0
-  fi
-fi
+list.runner-list row:selected label {
+  color: inherit;
+}
 
-prefix="$(zenity --file-selection --directory --title="$title")" || exit 1
+list.runner-list row:selected .dim-label {
+  opacity: 0.86;
+}
 
-rows=()
-name=""
-type=""
-source=""
-while IFS= read -r line; do
-  if [[ "$line" != *:* ]]; then
-    name="${line#"${line%%[![:space:]]*}"}"
-    name="${name#\* }"
-  elif [[ "$line" == "      type:   "* ]]; then
-    type="${line#      type:   }"
-  elif [[ "$line" == "      source: "* ]]; then
-    source="${line#      source: }"
-  elif [[ "$line" == "      path:   "* ]]; then
-    path="${line#      path:   }"
-    rows+=("$name" "$type" "$source" "$path")
-  fi
-done < <("$wrapper" --list-runner)
+list.runner-list row:focus {
+  outline-color: @accent_color;
+}
 
-if [[ ${#rows[@]} -eq 0 ]]; then
-  zenity --error --title="$title" --icon=shorin-proton --text="$no_runner_text"
-  exit 1
-fi
+entry:focus {
+  outline-color: @accent_color;
+  border-color: @accent_color;
+  box-shadow: none;
+}
+""")
+    display = Gdk.Display.get_default()
+    if display:
+        Gtk.StyleContext.add_provider_for_display(
+            display,
+            provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+        )
 
-runner="$(zenity \
-  --list \
-  --title="$title" \
-  --width=900 \
-  --height=420 \
-  --column="$runner_name_column" \
-  --column="$runner_type_column" \
-  --column="$runner_source_column" \
-  --column="$runner_path_column" \
-  --print-column=4 \
-  "${rows[@]}")" || exit 1
 
-mkdir -p "$cache_dir"
-{
-  printf 'exe=%s\n' "$exe"
-  printf 'prefix=%s\n' "$prefix"
-  printf 'runner=%s\n' "$runner"
-} > "$cache_file"
+def resolve_wrapper() -> str:
+    env = os.environ.get("SHORIN_PROTON_WRAPPER")
+    if env:
+        return env
+    candidate = Path(__file__).resolve().with_name("shorin-proton-wrapper")
+    if candidate.is_file() and os.access(candidate, os.X_OK):
+        return str(candidate)
+    return "shorin-proton-wrapper"
 
-exec "$wrapper" -p "$prefix" --runner "$runner" "$exe"
+
+def cache_file_for(exe: Path) -> Path:
+    cache_home = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
+    cache_dir = cache_home / "shorin-proton-wrapper" / "associations"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    key = hashlib.sha256(str(exe).encode()).hexdigest()
+    return cache_dir / f"{key}.conf"
+
+
+def read_cache(path: Path):
+    if not path.is_file():
+        return None
+    data = {}
+    for line in path.read_text(errors="ignore").splitlines():
+        if "=" in line:
+            key, value = line.split("=", 1)
+            data[key] = value
+    prefix = data.get("prefix", "")
+    runner = data.get("runner", "")
+    if prefix and runner and Path(prefix).is_dir() and os.access(runner, os.X_OK):
+        return {"prefix": prefix, "runner": runner}
+    return None
+
+
+def write_cache(path: Path, exe: Path, prefix: str, runner: str):
+    path.write_text(f"exe={exe}\nprefix={prefix}\nrunner={runner}\n")
+
+
+def normalize_exe_arg(value: str) -> Path:
+    value = value.strip()
+    parsed = urlparse(value)
+    if parsed.scheme == "file":
+        return Path(unquote(parsed.path)).expanduser().resolve(strict=False)
+    return Path(value).expanduser().resolve(strict=False)
+
+
+def parse_runners(output: str):
+    runners = []
+    name = kind = source = ""
+    for line in output.splitlines():
+        if not line.strip():
+            continue
+        if ":" not in line:
+            name = line.strip().removeprefix("* ").strip()
+        elif line.startswith("      type:   "):
+            kind = line.removeprefix("      type:   ")
+        elif line.startswith("      source: "):
+            source = line.removeprefix("      source: ")
+        elif line.startswith("      path:   "):
+            runners.append({
+                "name": name,
+                "type": kind,
+                "source": source,
+                "path": line.removeprefix("      path:   "),
+            })
+    return runners
+
+
+def load_runners(wrapper: str):
+    try:
+        result = subprocess.run([wrapper, "--list-runner"], check=False, text=True, capture_output=True)
+    except OSError:
+        return []
+    return parse_runners(result.stdout)
+
+
+class SelectorApp(Gtk.Application):
+    def __init__(self, exe: Path):
+        super().__init__(application_id="io.github.shorin.proton_wrapper_select")
+        self.exe = exe
+        self.wrapper = resolve_wrapper()
+        self.cache_file = cache_file_for(exe)
+        self.window = None
+        self.prefix_entry = None
+        self.selected_runner = None
+
+    def do_activate(self):
+        install_css()
+        cache = read_cache(self.cache_file)
+        if cache:
+            self.show_cache_window(cache)
+        else:
+            self.show_select_window()
+
+    def show_error(self, message: str):
+        dialog = Gtk.MessageDialog(
+            transient_for=self.window,
+            modal=True,
+            message_type=Gtk.MessageType.ERROR,
+            buttons=Gtk.ButtonsType.OK,
+            text=message,
+        )
+        dialog.connect("response", lambda d, _r: d.close())
+        dialog.present()
+
+    def run_with(self, prefix: str, runner: str):
+        subprocess.Popen([self.wrapper, "-p", prefix, "--runner", runner, str(self.exe)])
+        self.quit()
+
+    def show_cache_window(self, cache):
+        self.window = Gtk.ApplicationWindow(application=self, title=TEXT["title"])
+        self.window.set_default_size(560, 300)
+
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
+        outer.set_margin_top(20)
+        outer.set_margin_bottom(20)
+        outer.set_margin_start(20)
+        outer.set_margin_end(20)
+
+        heading = Gtk.Label(label=TEXT["cached_title"], xalign=0)
+        heading.add_css_class("title-2")
+        outer.append(heading)
+
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+
+        content.append(section(TEXT["prefix"]))
+        prefix = Gtk.Label(label=cache["prefix"], xalign=0, wrap=True)
+        prefix.add_css_class("dim-label")
+        prefix.set_max_width_chars(58)
+        content.append(prefix)
+
+        content.append(section(TEXT["runner"]))
+        runner = Gtk.Label(label=cache["runner"], xalign=0, wrap=True)
+        runner.add_css_class("dim-label")
+        runner.set_max_width_chars(58)
+        content.append(runner)
+
+        question = Gtk.Label(label=TEXT["cached_question"], xalign=0)
+        content.append(question)
+        outer.append(content)
+
+        spacer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        spacer.set_vexpand(True)
+        outer.append(spacer)
+
+        buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        buttons.set_halign(Gtk.Align.END)
+        cancel = Gtk.Button(label=TEXT["cancel"])
+        reselect = Gtk.Button(label=TEXT["reselect"])
+        run = Gtk.Button(label=TEXT["run"])
+        cancel.connect("clicked", lambda _b: self.quit())
+        reselect.connect("clicked", lambda _b: (self.window.close(), self.show_select_window()))
+        run.connect("clicked", lambda _b: self.run_with(cache["prefix"], cache["runner"]))
+        buttons.append(cancel)
+        buttons.append(reselect)
+        buttons.append(run)
+        outer.append(buttons)
+
+        self.window.set_child(outer)
+        self.window.present()
+
+    def show_select_window(self):
+        self.window = Gtk.ApplicationWindow(application=self, title=TEXT["title"])
+        self.window.set_default_size(820, 620)
+
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
+        outer.set_margin_top(18)
+        outer.set_margin_bottom(18)
+        outer.set_margin_start(18)
+        outer.set_margin_end(18)
+
+        heading = Gtk.Label(label=TEXT["choose_env"], xalign=0)
+        heading.add_css_class("title-2")
+        outer.append(heading)
+
+        program = Gtk.Label(label=str(self.exe), xalign=0, wrap=True)
+        program.add_css_class("dim-label")
+        outer.append(program)
+
+        outer.append(section(TEXT["prefix"], TEXT["prefix_desc"]))
+        prefix_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.prefix_entry = Gtk.Entry(placeholder_text=TEXT["prefix"], hexpand=True)
+        browse = Gtk.Button(label=TEXT["browse"])
+        browse.connect("clicked", self.on_browse)
+        prefix_box.append(self.prefix_entry)
+        prefix_box.append(browse)
+        outer.append(prefix_box)
+
+        outer.append(section(TEXT["runner"], TEXT["runner_desc"]))
+        runners = load_runners(self.wrapper)
+        list_box = Gtk.ListBox(selection_mode=Gtk.SelectionMode.SINGLE)
+        list_box.add_css_class("runner-list")
+        for index, runner in enumerate(runners):
+            row = Gtk.ListBoxRow()
+            row.runner_path = runner["path"]
+            row_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            row_box.set_margin_top(8)
+            row_box.set_margin_bottom(8)
+            row_box.set_margin_start(12)
+            row_box.set_margin_end(12)
+            title = Gtk.Label(label=runner["name"], xalign=0)
+            title.add_css_class("heading")
+            detail = Gtk.Label(label=f'{runner["type"]} · {runner["source"]}\n{runner["path"]}', xalign=0, wrap=True)
+            detail.add_css_class("dim-label")
+            row_box.append(title)
+            row_box.append(detail)
+            row.set_child(row_box)
+            list_box.append(row)
+            if index == 0:
+                self.selected_runner = runner["path"]
+        list_box.connect("row-selected", self.on_runner_selected)
+        if runners:
+            list_box.select_row(list_box.get_row_at_index(0))
+
+        scroll = Gtk.ScrolledWindow(vexpand=True)
+        scroll.set_child(list_box)
+        outer.append(scroll)
+
+        buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        buttons.set_halign(Gtk.Align.END)
+        cancel = Gtk.Button(label=TEXT["cancel"])
+        run = Gtk.Button(label=TEXT["run"])
+        cancel.connect("clicked", lambda _b: self.quit())
+        run.connect("clicked", self.on_run)
+        buttons.append(cancel)
+        buttons.append(run)
+        outer.append(buttons)
+
+        self.window.set_child(outer)
+        self.window.present()
+        if not runners:
+            self.show_error(TEXT["no_runner"])
+
+    def on_runner_selected(self, _list_box, row):
+        if row:
+            self.selected_runner = getattr(row, "runner_path", None)
+
+    def on_browse(self, _button):
+        dialog = Gtk.FileChooserNative(
+            title=TEXT["prefix"],
+            transient_for=self.window,
+            action=Gtk.FileChooserAction.SELECT_FOLDER,
+            accept_label=TEXT["browse"],
+            cancel_label=TEXT["cancel"],
+        )
+        dialog.connect("response", self.on_folder_response)
+        dialog.show()
+
+    def on_folder_response(self, dialog, response):
+        if response == Gtk.ResponseType.ACCEPT:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                file = dialog.get_file()
+            if file:
+                path = file.get_path()
+                if path:
+                    self.prefix_entry.set_text(path)
+        dialog.destroy()
+
+    def on_run(self, _button):
+        prefix = self.prefix_entry.get_text()
+        if not prefix:
+            self.show_error(TEXT["select_prefix"])
+            return
+        if not self.selected_runner:
+            self.show_error(TEXT["select_runner"])
+            return
+        write_cache(self.cache_file, self.exe, prefix, self.selected_runner)
+        self.run_with(prefix, self.selected_runner)
+
+
+def main():
+    if len(sys.argv) < 2:
+        print(TEXT["no_exe_error"], file=sys.stderr)
+        return 1
+    exe = normalize_exe_arg(sys.argv[1])
+    app = SelectorApp(exe)
+    try:
+        return app.run([sys.argv[0]])
+    except KeyboardInterrupt:
+        return 130
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
