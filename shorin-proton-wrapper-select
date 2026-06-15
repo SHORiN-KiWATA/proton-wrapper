@@ -15,7 +15,7 @@ ui_lang() {
 
 lang="$(ui_lang)"
 if [[ "$lang" == "zh" ]]; then
-  title="Shorin Proton Wrapper"
+  title="运行 Windows 软件"
   err_wrapper_required="shorin-proton-wrapper-select: 需要 shorin-proton-wrapper"
   err_no_exe="shorin-proton-wrapper-select: 未提供可执行文件"
   err_zenity_required="shorin-proton-wrapper-select: 需要 zenity"
@@ -33,7 +33,7 @@ if [[ "$lang" == "zh" ]]; then
   runner_source_column="来源"
   runner_path_column="路径"
 else
-  title="Shorin Proton Wrapper"
+  title="Run Windows Software"
   err_wrapper_required="shorin-proton-wrapper-select: shorin-proton-wrapper is required"
   err_no_exe="shorin-proton-wrapper-select: no executable provided"
   err_zenity_required="shorin-proton-wrapper-select: zenity is required"
@@ -99,6 +99,7 @@ if read_cache; then
   action="$(zenity \
     --question \
     --title="$title" \
+    --icon=shorin-proton \
     --text="$cache_message" \
     --width=820 \
     --ok-label="$action_run" \
@@ -136,7 +137,7 @@ while IFS= read -r line; do
 done < <("$wrapper" --list-runner)
 
 if [[ ${#rows[@]} -eq 0 ]]; then
-  zenity --error --title="$title" --text="$no_runner_text"
+  zenity --error --title="$title" --icon=shorin-proton --text="$no_runner_text"
   exit 1
 fi
 
