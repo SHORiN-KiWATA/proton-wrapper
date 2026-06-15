@@ -52,8 +52,8 @@ Options:
   --version VERSION       use specific release tag, default latest
   --update                update all installed Latest runners
   --remove ge|dw          remove runner from ~/.local/share/proton/runners
-  --remove-steam [ge|dw]  remove runner from Steam, or all wrapper-installed runners
-  --remove-lutris [ge|dw] remove runner from Lutris, or all wrapper-installed runners
+  --remove-steam ge|dw    remove runner from Steam, omit ge|dw to remove all wrapper-installed runners
+  --remove-lutris ge|dw   remove runner from Lutris, omit ge|dw to remove all wrapper-installed runners
   --help-full             show detailed help
 
 Examples:
@@ -88,8 +88,8 @@ usage_zh() {
   --version 版本          指定特定版本，默认 latest
   --update                升级所有已安装的 Latest 运行器
   --remove ge|dw          移除默认位置中已安装的运行器
-  --remove-steam [ge|dw]  移除 Steam 中指定或全部由 wrapper 安装的运行器
-  --remove-lutris [ge|dw] 移除 Lutris 中指定或全部由 wrapper 安装的运行器
+  --remove-steam ge|dw    移除 Steam 中指定运行器，省略 ge|dw 则移除全部由 wrapper 安装的运行器
+  --remove-lutris ge|dw   移除 Lutris 中指定运行器，省略 ge|dw 则移除全部由 wrapper 安装的运行器
   --help-full             显示完整说明
 
 示例:
@@ -140,8 +140,8 @@ Update runners:
 
 Remove runner:
   shorin-proton-wrapper --remove ge|dw
-  shorin-proton-wrapper --remove-steam [ge|dw]
-  shorin-proton-wrapper --remove-lutris [ge|dw]
+  shorin-proton-wrapper --remove-steam ge|dw
+  shorin-proton-wrapper --remove-lutris ge|dw
 
 Install targets:
   local   ~/.local/share/proton/runners
@@ -190,8 +190,8 @@ usage_full_zh() {
 
 移除运行器:
   shorin-proton-wrapper --remove ge|dw
-  shorin-proton-wrapper --remove-steam [ge|dw]
-  shorin-proton-wrapper --remove-lutris [ge|dw]
+  shorin-proton-wrapper --remove-steam ge|dw
+  shorin-proton-wrapper --remove-lutris ge|dw
 
 安装目标:
   local   ~/.local/share/proton/runners
