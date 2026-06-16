@@ -19,6 +19,11 @@ TARGET=""
 TARGET_ARGS=()
 LANG_OVERRIDE="${PROTON_LANG:-}"
 EXPORT_SHORTCUTS_QUIET=0
+GAMESCOPE=0
+GAMESCOPE_FULLSCREEN=1
+GAMESCOPE_RES=""
+GAMESCOPE_FPS=""
+GAMESCOPE_FSR=0
 
 if [[ "$0" == */* ]]; then
   SELF_PATH="$(realpath -m "$0")"
@@ -52,6 +57,11 @@ Options:
   --export-shortcuts      export prefix .lnk shortcuts to the Linux application menu
   --list-runner           list installed runners
   --runner PATH|ge|dw     use specified runner
+  --gamescope             run target through Gamescope, fullscreen by default
+  --gamescope-windowed    run Gamescope in a window
+  --gamescope-res WxH     set game render resolution, e.g. 1920x1080
+  --gamescope-fps FPS     limit frame rate
+  --gamescope-fsr         enable FSR upscaling
   --install ge|dw         install runner to ~/.local/share/proton/runners
   --install-steam ge|dw   install runner for Steam
   --install-lutris ge|dw  install runner for Lutris
@@ -89,6 +99,11 @@ usage_zh() {
   --export-shortcuts      将前置环境中的 .lnk 快捷方式导出到 Linux 应用菜单
   --list-runner           列出已安装的运行器
   --runner 路径|ge|dw     指定运行器
+  --gamescope             使用 Gamescope 显示适配，默认全屏
+  --gamescope-windowed    使用 Gamescope 窗口模式
+  --gamescope-res 宽x高   设置游戏渲染分辨率，例如 1920x1080
+  --gamescope-fps 帧率    限制帧率
+  --gamescope-fsr         启用 FSR 超分辨率
   --install ge|dw         安装运行器，默认安装至 ~/.local/share/proton/runners
   --install-steam ge|dw   给 Steam 安装运行器
   --install-lutris ge|dw  给 Lutris 安装运行器
@@ -1062,6 +1077,58 @@ exec_wine_command() {
   exec env WINEPREFIX="$PREFIX/pfx" "$runner" "$@"
 }
 
+validate_resolution() {
+  [[ "$1" =~ ^[0-9]+x[0-9]+$ ]] || die "invalid resolution: $1"
+}
+
+validate_number() {
+  [[ "$1" =~ ^[0-9]+$ ]] || die "invalid number: $1"
+}
+
+build_gamescope_args() {
+  GAMESCOPE_ARGS=()
+  [[ $GAMESCOPE -eq 1 ]] || return 0
+  command -v gamescope >/dev/null 2>&1 || die "gamescope is not installed"
+
+  if [[ $GAMESCOPE_FULLSCREEN -eq 1 ]]; then
+    GAMESCOPE_ARGS+=("-f")
+  fi
+  if [[ -n "$GAMESCOPE_RES" ]]; then
+    validate_resolution "$GAMESCOPE_RES"
+    GAMESCOPE_ARGS+=("-w" "${GAMESCOPE_RES%x*}" "-h" "${GAMESCOPE_RES#*x}")
+  fi
+  if [[ -n "$GAMESCOPE_FPS" ]]; then
+    validate_number "$GAMESCOPE_FPS"
+    GAMESCOPE_ARGS+=("-r" "$GAMESCOPE_FPS")
+  fi
+  if [[ $GAMESCOPE_FSR -eq 1 ]]; then
+    GAMESCOPE_ARGS+=("-F" "fsr")
+  fi
+}
+
+run_gamescope_proton_command() {
+  local runner="$1"
+  shift
+  mkdir -p "$PREFIX"
+  build_gamescope_args
+  env \
+    STEAM_COMPAT_DATA_PATH="$PREFIX" \
+    STEAM_COMPAT_CLIENT_INSTALL_PATH="$(steam_root_dir)" \
+    SteamAppId="${SteamAppId:-0}" \
+    SteamGameId="${SteamGameId:-0}" \
+    UMU_ID="${UMU_ID:-shorin-proton-wrapper}" \
+    UMU_USE_STEAM="${UMU_USE_STEAM:-0}" \
+    gamescope "${GAMESCOPE_ARGS[@]}" -- "$runner" "$@"
+}
+
+run_gamescope_wine_command() {
+  local runner="$1"
+  shift
+  mkdir -p "$PREFIX/pfx"
+  build_gamescope_args
+  env WINEPREFIX="$PREFIX/pfx" gamescope "${GAMESCOPE_ARGS[@]}" -- "$runner" "$@"
+}
+
 init_prefix() {
   select_init_runner
   if [[ "$RESOLVED_RUNNER_TYPE" == "proton" ]]; then
@@ -1251,10 +1318,18 @@ run_target() {
   cd "$workdir"
   set +e
   if [[ "$RESOLVED_RUNNER_TYPE" == "proton" ]]; then
-    run_proton_command "$RESOLVED_RUNNER_PATH" waitforexitandrun "$exe" "${TARGET_ARGS[@]}"
+    if [[ $GAMESCOPE -eq 1 ]]; then
+      run_gamescope_proton_command "$RESOLVED_RUNNER_PATH" waitforexitandrun "$exe" "${TARGET_ARGS[@]}"
+    else
+      run_proton_command "$RESOLVED_RUNNER_PATH" waitforexitandrun "$exe" "${TARGET_ARGS[@]}"
+    fi
     status=$?
   else
-    run_wine_command "$RESOLVED_RUNNER_PATH" "$exe" "${TARGET_ARGS[@]}"
+    if [[ $GAMESCOPE -eq 1 ]]; then
+      run_gamescope_wine_command "$RESOLVED_RUNNER_PATH" "$exe" "${TARGET_ARGS[@]}"
+    else
+      run_wine_command "$RESOLVED_RUNNER_PATH" "$exe" "${TARGET_ARGS[@]}"
+    fi
     status=$?
   fi
   set -e
@@ -1338,6 +1413,34 @@ parse_args() {
           RUNNER_ARG="$RUNNER_ARG $1"
           shift
         done
+        ;;
+      --gamescope)
+        GAMESCOPE=1
+        shift
+        ;;
+      --gamescope-windowed)
+        GAMESCOPE=1
+        GAMESCOPE_FULLSCREEN=0
+        shift
+        ;;
+      --gamescope-res)
+        [[ $# -ge 2 ]] || die "$1 requires WIDTHxHEIGHT"
+        validate_resolution "$2"
+        GAMESCOPE=1
+        GAMESCOPE_RES="$2"
+        shift 2
+        ;;
+      --gamescope-fps)
+        [[ $# -ge 2 ]] || die "$1 requires FPS"
+        validate_number "$2"
+        GAMESCOPE=1
+        GAMESCOPE_FPS="$2"
+        shift 2
+        ;;
+      --gamescope-fsr)
+        GAMESCOPE=1
+        GAMESCOPE_FSR=1
+        shift
         ;;
       -d|--directory)
         [[ $# -ge 2 ]] || die "$1 requires a directory"

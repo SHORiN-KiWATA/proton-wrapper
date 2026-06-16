@@ -39,15 +39,42 @@ TEXT = {
     "prefix_desc": "选择或输入此程序使用的 Proton 前置环境目录" if ZH else "Choose or enter the Proton prefix directory for this program",
     "runner_desc": "选择用于启动此程序的 Proton 或 Wine 运行器" if ZH else "Choose the Proton or Wine runner used to launch this program",
     "run": "直接运行" if ZH else "Run",
-    "reselect": "重新选择" if ZH else "Reselect",
+    "reselect": "重新设置" if ZH else "Reconfigure",
     "cancel": "取消" if ZH else "Cancel",
     "choose_env": "选择运行环境" if ZH else "Choose runtime environment",
     "browse": "浏览" if ZH else "Browse",
+    "display": "显示适配" if ZH else "Display compatibility",
+    "display_desc": "遇到全屏、分辨率或帧率问题时使用。" if ZH else "Use this for fullscreen, resolution, or frame-rate issues.",
+    "use_gamescope": "使用 Gamescope" if ZH else "Use Gamescope",
+    "fullscreen": "全屏运行" if ZH else "Fullscreen",
+    "resolution": "游戏分辨率" if ZH else "Game resolution",
+    "fps": "帧率限制" if ZH else "Frame-rate limit",
+    "unset": "不指定" if ZH else "Unset",
+    "unlimited": "不限制" if ZH else "Unlimited",
+    "custom": "自定义..." if ZH else "Custom...",
+    "custom_resolution": "自定义分辨率，例如 1366x768" if ZH else "Custom resolution, e.g. 1366x768",
+    "custom_fps": "自定义帧率" if ZH else "Custom FPS",
+    "fsr": "FSR 超分辨率" if ZH else "FSR upscaling",
+    "fsr_desc": "低分辨率渲染后放大到屏幕，提升性能但可能降低清晰度。" if ZH else "Render at a lower resolution and upscale to the screen; improves performance but may reduce clarity.",
+    "invalid_resolution": "分辨率格式应为 宽x高，例如 1920x1080。" if ZH else "Resolution must be WIDTHxHEIGHT, e.g. 1920x1080.",
+    "invalid_fps": "帧率必须是数字。" if ZH else "FPS must be a number.",
     "no_runner": "没有找到 Proton 或 Wine 运行器。" if ZH else "No Proton or Wine runner found.",
     "select_prefix": "请选择前置环境目录。" if ZH else "Select a prefix directory.",
     "select_runner": "请选择运行器。" if ZH else "Select a runner.",
     "no_exe_error": "shorin-proton-wrapper-select: 未提供可执行文件" if ZH else "shorin-proton-wrapper-select: no executable provided",
 }
+
+RESOLUTION_OPTIONS = ["unset", "1280x720", "1600x900", "1920x1080", "2560x1440", "3840x2160", "custom"]
+FPS_OPTIONS = ["unset", "30", "40", "45", "60", "90", "120", "144", "custom"]
+
+
+def is_resolution(value: str) -> bool:
+    parts = value.lower().split("x", 1)
+    return len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit()
+
+
+def is_number(value: str) -> bool:
+    return value.isdigit()
 
 
 def section(title: str, description: str | None = None):
@@ -127,12 +154,29 @@ def read_cache(path: Path):
     prefix = data.get("prefix", "")
     runner = data.get("runner", "")
     if prefix and runner and Path(prefix).is_dir() and os.access(runner, os.X_OK):
-        return {"prefix": prefix, "runner": runner}
+        return {
+            "prefix": prefix,
+            "runner": runner,
+            "gamescope": data.get("gamescope", "0"),
+            "gamescope_fullscreen": data.get("gamescope_fullscreen", "1"),
+            "gamescope_res": data.get("gamescope_res", ""),
+            "gamescope_fps": data.get("gamescope_fps", ""),
+            "gamescope_fsr": data.get("gamescope_fsr", "0"),
+        }
     return None
 
 
-def write_cache(path: Path, exe: Path, prefix: str, runner: str):
-    path.write_text(f"exe={exe}\nprefix={prefix}\nrunner={runner}\n")
+def write_cache(path: Path, exe: Path, prefix: str, runner: str, options: dict):
+    path.write_text(
+        f"exe={exe}\n"
+        f"prefix={prefix}\n"
+        f"runner={runner}\n"
+        f"gamescope={options.get('gamescope', '0')}\n"
+        f"gamescope_fullscreen={options.get('gamescope_fullscreen', '1')}\n"
+        f"gamescope_res={options.get('gamescope_res', '')}\n"
+        f"gamescope_fps={options.get('gamescope_fps', '')}\n"
+        f"gamescope_fsr={options.get('gamescope_fsr', '0')}\n"
+    )
 
 
 def normalize_exe_arg(value: str) -> Path:
@@ -173,6 +217,35 @@ def load_runners(wrapper: str):
     return parse_runners(result.stdout)
 
 
+def gamescope_args(options: dict) -> list[str]:
+    if options.get("gamescope") != "1":
+        return []
+    args = ["--gamescope"]
+    if options.get("gamescope_fullscreen", "1") != "1":
+        args.append("--gamescope-windowed")
+    if options.get("gamescope_res"):
+        args.extend(["--gamescope-res", options["gamescope_res"]])
+    if options.get("gamescope_fps"):
+        args.extend(["--gamescope-fps", options["gamescope_fps"]])
+    if options.get("gamescope_fsr") == "1":
+        args.append("--gamescope-fsr")
+    return args
+
+
+def gamescope_summary(options: dict) -> str:
+    if options.get("gamescope") != "1":
+        return "Gamescope: " + ("关闭" if ZH else "off")
+    parts = ["Gamescope"]
+    parts.append("全屏" if options.get("gamescope_fullscreen", "1") == "1" and ZH else "fullscreen" if options.get("gamescope_fullscreen", "1") == "1" else "窗口" if ZH else "windowed")
+    if options.get("gamescope_res"):
+        parts.append(options["gamescope_res"])
+    if options.get("gamescope_fps"):
+        parts.append((options["gamescope_fps"] + " FPS"))
+    if options.get("gamescope_fsr") == "1":
+        parts.append("FSR")
+    return ", ".join(parts)
+
+
 class SelectorApp(Gtk.Application):
     def __init__(self, exe: Path):
         super().__init__(application_id="io.github.shorin.proton_wrapper_select")
@@ -182,6 +255,13 @@ class SelectorApp(Gtk.Application):
         self.window = None
         self.prefix_entry = None
         self.selected_runner = None
+        self.gamescope_check = None
+        self.fullscreen_check = None
+        self.res_combo = None
+        self.custom_res_entry = None
+        self.fps_combo = None
+        self.custom_fps_entry = None
+        self.fsr_check = None
 
     def do_activate(self):
         install_css()
@@ -202,8 +282,12 @@ class SelectorApp(Gtk.Application):
         dialog.connect("response", lambda d, _r: d.close())
         dialog.present()
 
-    def run_with(self, prefix: str, runner: str):
-        subprocess.Popen([self.wrapper, "-p", prefix, "--runner", runner, str(self.exe)])
+    def run_with(self, prefix: str, runner: str, options: dict | None = None):
+        options = options or {}
+        command = [self.wrapper, "-p", prefix, "--runner", runner]
+        command.extend(gamescope_args(options))
+        command.append(str(self.exe))
+        subprocess.Popen(command)
         self.quit()
 
     def show_cache_window(self, cache):
@@ -234,6 +318,11 @@ class SelectorApp(Gtk.Application):
         runner.set_max_width_chars(58)
         content.append(runner)
 
+        content.append(section(TEXT["display"]))
+        display = Gtk.Label(label=gamescope_summary(cache), xalign=0, wrap=True)
+        display.add_css_class("dim-label")
+        content.append(display)
+
         question = Gtk.Label(label=TEXT["cached_question"], xalign=0)
         content.append(question)
         outer.append(content)
@@ -249,7 +338,7 @@ class SelectorApp(Gtk.Application):
         run = Gtk.Button(label=TEXT["run"])
         cancel.connect("clicked", lambda _b: self.quit())
         reselect.connect("clicked", lambda _b: (self.window.close(), self.show_select_window()))
-        run.connect("clicked", lambda _b: self.run_with(cache["prefix"], cache["runner"]))
+        run.connect("clicked", lambda _b: self.run_with(cache["prefix"], cache["runner"], cache))
         buttons.append(cancel)
         buttons.append(reselect)
         buttons.append(run)
@@ -315,6 +404,56 @@ class SelectorApp(Gtk.Application):
         scroll.set_child(list_box)
         outer.append(scroll)
 
+        outer.append(section(TEXT["display"], TEXT["display_desc"]))
+        display_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        self.gamescope_check = Gtk.CheckButton(label=TEXT["use_gamescope"])
+        self.gamescope_check.connect("toggled", self.on_gamescope_toggled)
+        display_box.append(self.gamescope_check)
+
+        self.fullscreen_check = Gtk.CheckButton(label=TEXT["fullscreen"])
+        self.fullscreen_check.set_active(True)
+        display_box.append(self.fullscreen_check)
+
+        res_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        res_label = Gtk.Label(label=TEXT["resolution"], xalign=0)
+        res_label.set_size_request(120, -1)
+        self.res_combo = Gtk.ComboBoxText()
+        for value in RESOLUTION_OPTIONS:
+            label = TEXT["unset"] if value == "unset" else TEXT["custom"] if value == "custom" else value
+            self.res_combo.append(value, label)
+        self.res_combo.set_active_id("unset")
+        self.res_combo.connect("changed", self.on_display_option_changed)
+        self.custom_res_entry = Gtk.Entry(placeholder_text=TEXT["custom_resolution"], hexpand=True)
+        self.custom_res_entry.set_visible(False)
+        res_box.append(res_label)
+        res_box.append(self.res_combo)
+        res_box.append(self.custom_res_entry)
+        display_box.append(res_box)
+
+        fps_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        fps_label = Gtk.Label(label=TEXT["fps"], xalign=0)
+        fps_label.set_size_request(120, -1)
+        self.fps_combo = Gtk.ComboBoxText()
+        for value in FPS_OPTIONS:
+            label = TEXT["unlimited"] if value == "unset" else TEXT["custom"] if value == "custom" else value
+            self.fps_combo.append(value, label)
+        self.fps_combo.set_active_id("unset")
+        self.fps_combo.connect("changed", self.on_display_option_changed)
+        self.custom_fps_entry = Gtk.Entry(placeholder_text=TEXT["custom_fps"], hexpand=True)
+        self.custom_fps_entry.set_visible(False)
+        fps_box.append(fps_label)
+        fps_box.append(self.fps_combo)
+        fps_box.append(self.custom_fps_entry)
+        display_box.append(fps_box)
+
+        self.fsr_check = Gtk.CheckButton(label=TEXT["fsr"])
+        display_box.append(self.fsr_check)
+        fsr_desc = Gtk.Label(label=TEXT["fsr_desc"], xalign=0, wrap=True)
+        fsr_desc.add_css_class("dim-label")
+        display_box.append(fsr_desc)
+        outer.append(display_box)
+        self.on_gamescope_toggled(self.gamescope_check)
+
         buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         buttons.set_halign(Gtk.Align.END)
         cancel = Gtk.Button(label=TEXT["cancel"])
@@ -356,6 +495,45 @@ class SelectorApp(Gtk.Application):
                     self.prefix_entry.set_text(path)
         dialog.destroy()
 
+    def on_gamescope_toggled(self, button):
+        active = button.get_active()
+        for widget in (self.fullscreen_check, self.res_combo, self.custom_res_entry, self.fps_combo, self.custom_fps_entry, self.fsr_check):
+            if widget:
+                widget.set_sensitive(active)
+        self.on_display_option_changed(None)
+
+    def on_display_option_changed(self, _widget):
+        if self.custom_res_entry and self.res_combo:
+            self.custom_res_entry.set_visible(self.res_combo.get_active_id() == "custom")
+        if self.custom_fps_entry and self.fps_combo:
+            self.custom_fps_entry.set_visible(self.fps_combo.get_active_id() == "custom")
+
+    def selected_gamescope_options(self):
+        enabled = self.gamescope_check.get_active() if self.gamescope_check else False
+        res = self.res_combo.get_active_id() if self.res_combo else ""
+        fps = self.fps_combo.get_active_id() if self.fps_combo else ""
+        if res == "unset":
+            res = ""
+        if fps == "unset":
+            fps = ""
+        if res == "custom":
+            res = self.custom_res_entry.get_text().strip()
+            if not is_resolution(res):
+                self.show_error(TEXT["invalid_resolution"])
+                return None
+        if fps == "custom":
+            fps = self.custom_fps_entry.get_text().strip()
+            if not is_number(fps):
+                self.show_error(TEXT["invalid_fps"])
+                return None
+        return {
+            "gamescope": "1" if enabled else "0",
+            "gamescope_fullscreen": "1" if self.fullscreen_check and self.fullscreen_check.get_active() else "0",
+            "gamescope_res": res or "",
+            "gamescope_fps": fps or "",
+            "gamescope_fsr": "1" if self.fsr_check and self.fsr_check.get_active() else "0",
+        }
+
     def on_run(self, _button):
         prefix = self.prefix_entry.get_text()
         if not prefix:
@@ -364,8 +542,11 @@ class SelectorApp(Gtk.Application):
         if not self.selected_runner:
             self.show_error(TEXT["select_runner"])
             return
-        write_cache(self.cache_file, self.exe, prefix, self.selected_runner)
-        self.run_with(prefix, self.selected_runner)
+        options = self.selected_gamescope_options()
+        if options is None:
+            return
+        write_cache(self.cache_file, self.exe, prefix, self.selected_runner, options)
+        self.run_with(prefix, self.selected_runner, options)
 
 
 def main():
