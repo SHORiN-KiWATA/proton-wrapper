@@ -24,3 +24,8 @@ shorin-proton-wrapper --gamescope --gamescope-res 1280x720 --gamescope-fps 60 --
 ```
 
 FSR 会让游戏以较低分辨率渲染后放大到屏幕，通常可提升性能，但可能降低清晰度。
+高级用户可以追加原生 Gamescope 参数：
+
+```sh
+shorin-proton-wrapper --gamescope --gamescope-args "--mangoapp" game.exe
+```

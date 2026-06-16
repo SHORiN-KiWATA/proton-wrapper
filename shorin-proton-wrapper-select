@@ -56,6 +56,8 @@ TEXT = {
     "custom_fps": "自定义帧率" if ZH else "Custom FPS",
     "fsr": "FSR 超分辨率" if ZH else "FSR upscaling",
     "fsr_desc": "低分辨率渲染后放大到屏幕，提升性能但可能降低清晰度。" if ZH else "Render at a lower resolution and upscale to the screen; improves performance but may reduce clarity.",
+    "extra_args": "额外参数" if ZH else "Extra arguments",
+    "extra_args_desc": "高级选项：直接追加到 gamescope 命令。" if ZH else "Advanced: appended directly to the gamescope command.",
     "invalid_resolution": "分辨率格式应为 宽x高，例如 1920x1080。" if ZH else "Resolution must be WIDTHxHEIGHT, e.g. 1920x1080.",
     "invalid_fps": "帧率必须是数字。" if ZH else "FPS must be a number.",
     "no_runner": "没有找到 Proton 或 Wine 运行器。" if ZH else "No Proton or Wine runner found.",
@@ -64,8 +66,8 @@ TEXT = {
     "no_exe_error": "shorin-proton-wrapper-select: 未提供可执行文件" if ZH else "shorin-proton-wrapper-select: no executable provided",
 }
 
-RESOLUTION_OPTIONS = ["unset", "1280x720", "1600x900", "1920x1080", "2560x1440", "3840x2160", "custom"]
-FPS_OPTIONS = ["unset", "30", "40", "45", "60", "90", "120", "144", "custom"]
+COMMON_RESOLUTIONS = ["1280x720", "1600x900", "1920x1080", "2560x1440", "3840x2160"]
+COMMON_FPS = ["30", "40", "45", "60", "90", "120", "144", "165", "240"]
 
 
 def is_resolution(value: str) -> bool:
@@ -75,6 +77,56 @@ def is_resolution(value: str) -> bool:
 
 def is_number(value: str) -> bool:
     return value.isdigit()
+
+
+def display_modes():
+    resolutions = []
+    refresh_rates = []
+    display = Gdk.Display.get_default()
+    if not display:
+        return resolutions, refresh_rates
+
+    monitors = display.get_monitors()
+    for index in range(monitors.get_n_items()):
+        monitor = monitors.get_item(index)
+        if not monitor:
+            continue
+        geometry = monitor.get_geometry()
+        if geometry.width > 0 and geometry.height > 0:
+            resolutions.append(f"{geometry.width}x{geometry.height}")
+        refresh = monitor.get_refresh_rate()
+        if refresh > 0:
+            refresh_rates.append(str(round(refresh / 1000)))
+    return resolutions, refresh_rates
+
+
+def unique_preserve_order(values):
+    seen = set()
+    result = []
+    for value in values:
+        if value and value not in seen:
+            seen.add(value)
+            result.append(value)
+    return result
+
+
+def resolution_options():
+    current, _refresh = display_modes()
+    max_width = max((int(value.split("x", 1)[0]) for value in current if is_resolution(value)), default=3840)
+    max_height = max((int(value.split("x", 1)[1]) for value in current if is_resolution(value)), default=2160)
+    common = [
+        value for value in COMMON_RESOLUTIONS
+        if int(value.split("x", 1)[0]) <= max_width and int(value.split("x", 1)[1]) <= max_height
+    ]
+    return ["unset"] + unique_preserve_order(current + common) + ["custom"]
+
+
+def fps_options():
+    _resolutions, current = display_modes()
+    current_numbers = [int(value) for value in current if is_number(value)]
+    max_refresh = max(current_numbers, default=144)
+    common = [value for value in COMMON_FPS if int(value) <= max_refresh]
+    return ["unset"] + unique_preserve_order(current + common) + ["custom"]
 
 
 def section(title: str, description: str | None = None):
@@ -114,6 +166,16 @@ entry:focus {
   outline-color: @accent_color;
   border-color: @accent_color;
   box-shadow: none;
+}
+
+checkbutton check:checked {
+  background-color: @accent_bg_color;
+  border-color: @accent_bg_color;
+  color: @accent_fg_color;
+}
+
+checkbutton check:focus {
+  outline-color: @accent_color;
 }
 """)
     display = Gdk.Display.get_default()
@@ -162,6 +224,7 @@ def read_cache(path: Path):
             "gamescope_res": data.get("gamescope_res", ""),
             "gamescope_fps": data.get("gamescope_fps", ""),
             "gamescope_fsr": data.get("gamescope_fsr", "0"),
+            "gamescope_args": data.get("gamescope_args", ""),
         }
     return None
 
@@ -176,6 +239,7 @@ def write_cache(path: Path, exe: Path, prefix: str, runner: str, options: dict):
         f"gamescope_res={options.get('gamescope_res', '')}\n"
         f"gamescope_fps={options.get('gamescope_fps', '')}\n"
         f"gamescope_fsr={options.get('gamescope_fsr', '0')}\n"
+        f"gamescope_args={options.get('gamescope_args', '')}\n"
     )
 
 
@@ -229,6 +293,8 @@ def gamescope_args(options: dict) -> list[str]:
         args.extend(["--gamescope-fps", options["gamescope_fps"]])
     if options.get("gamescope_fsr") == "1":
         args.append("--gamescope-fsr")
+    if options.get("gamescope_args"):
+        args.extend(["--gamescope-args", options["gamescope_args"]])
     return args
 
 
@@ -243,6 +309,8 @@ def gamescope_summary(options: dict) -> str:
         parts.append((options["gamescope_fps"] + " FPS"))
     if options.get("gamescope_fsr") == "1":
         parts.append("FSR")
+    if options.get("gamescope_args"):
+        parts.append(options["gamescope_args"])
     return ", ".join(parts)
 
 
@@ -262,6 +330,7 @@ class SelectorApp(Gtk.Application):
         self.fps_combo = None
         self.custom_fps_entry = None
         self.fsr_check = None
+        self.extra_args_entry = None
 
     def do_activate(self):
         install_css()
@@ -405,20 +474,22 @@ class SelectorApp(Gtk.Application):
         outer.append(scroll)
 
         outer.append(section(TEXT["display"], TEXT["display_desc"]))
-        display_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        display_box = Gtk.Grid(column_spacing=16, row_spacing=8)
+        display_box.set_hexpand(True)
         self.gamescope_check = Gtk.CheckButton(label=TEXT["use_gamescope"])
         self.gamescope_check.connect("toggled", self.on_gamescope_toggled)
-        display_box.append(self.gamescope_check)
+        display_box.attach(self.gamescope_check, 0, 0, 1, 1)
 
         self.fullscreen_check = Gtk.CheckButton(label=TEXT["fullscreen"])
         self.fullscreen_check.set_active(True)
-        display_box.append(self.fullscreen_check)
+        display_box.attach(self.fullscreen_check, 0, 1, 1, 1)
 
         res_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         res_label = Gtk.Label(label=TEXT["resolution"], xalign=0)
-        res_label.set_size_request(120, -1)
+        res_label.set_size_request(88, -1)
         self.res_combo = Gtk.ComboBoxText()
-        for value in RESOLUTION_OPTIONS:
+        self.res_combo.set_hexpand(True)
+        for value in resolution_options():
             label = TEXT["unset"] if value == "unset" else TEXT["custom"] if value == "custom" else value
             self.res_combo.append(value, label)
         self.res_combo.set_active_id("unset")
@@ -428,13 +499,14 @@ class SelectorApp(Gtk.Application):
         res_box.append(res_label)
         res_box.append(self.res_combo)
         res_box.append(self.custom_res_entry)
-        display_box.append(res_box)
+        display_box.attach(res_box, 1, 0, 1, 1)
 
         fps_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         fps_label = Gtk.Label(label=TEXT["fps"], xalign=0)
-        fps_label.set_size_request(120, -1)
+        fps_label.set_size_request(88, -1)
         self.fps_combo = Gtk.ComboBoxText()
-        for value in FPS_OPTIONS:
+        self.fps_combo.set_hexpand(True)
+        for value in fps_options():
             label = TEXT["unlimited"] if value == "unset" else TEXT["custom"] if value == "custom" else value
             self.fps_combo.append(value, label)
         self.fps_combo.set_active_id("unset")
@@ -444,13 +516,24 @@ class SelectorApp(Gtk.Application):
         fps_box.append(fps_label)
         fps_box.append(self.fps_combo)
         fps_box.append(self.custom_fps_entry)
-        display_box.append(fps_box)
+        display_box.attach(fps_box, 1, 1, 1, 1)
 
         self.fsr_check = Gtk.CheckButton(label=TEXT["fsr"])
-        display_box.append(self.fsr_check)
+        display_box.attach(self.fsr_check, 0, 2, 2, 1)
         fsr_desc = Gtk.Label(label=TEXT["fsr_desc"], xalign=0, wrap=True)
         fsr_desc.add_css_class("dim-label")
-        display_box.append(fsr_desc)
+        display_box.attach(fsr_desc, 0, 3, 2, 1)
+
+        extra_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        extra_label = Gtk.Label(label=TEXT["extra_args"], xalign=0)
+        extra_label.set_size_request(88, -1)
+        self.extra_args_entry = Gtk.Entry(placeholder_text="--mangoapp --force-grab-cursor", hexpand=True)
+        extra_box.append(extra_label)
+        extra_box.append(self.extra_args_entry)
+        display_box.attach(extra_box, 0, 4, 2, 1)
+        extra_desc = Gtk.Label(label=TEXT["extra_args_desc"], xalign=0, wrap=True)
+        extra_desc.add_css_class("dim-label")
+        display_box.attach(extra_desc, 0, 5, 2, 1)
         outer.append(display_box)
         self.on_gamescope_toggled(self.gamescope_check)
 
@@ -497,7 +580,7 @@ class SelectorApp(Gtk.Application):
 
     def on_gamescope_toggled(self, button):
         active = button.get_active()
-        for widget in (self.fullscreen_check, self.res_combo, self.custom_res_entry, self.fps_combo, self.custom_fps_entry, self.fsr_check):
+        for widget in (self.fullscreen_check, self.res_combo, self.custom_res_entry, self.fps_combo, self.custom_fps_entry, self.fsr_check, self.extra_args_entry):
             if widget:
                 widget.set_sensitive(active)
         self.on_display_option_changed(None)
@@ -532,6 +615,7 @@ class SelectorApp(Gtk.Application):
             "gamescope_res": res or "",
             "gamescope_fps": fps or "",
             "gamescope_fsr": "1" if self.fsr_check and self.fsr_check.get_active() else "0",
+            "gamescope_args": self.extra_args_entry.get_text().strip() if self.extra_args_entry else "",
         }
 
     def on_run(self, _button):
