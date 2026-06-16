@@ -1029,6 +1029,8 @@ run_proton_command() {
     STEAM_COMPAT_CLIENT_INSTALL_PATH="$(steam_root_dir)" \
     SteamAppId="${SteamAppId:-0}" \
     SteamGameId="${SteamGameId:-0}" \
+    UMU_ID="${UMU_ID:-shorin-proton-wrapper}" \
+    UMU_USE_STEAM="${UMU_USE_STEAM:-0}" \
     "$runner" "$@"
 }
 
@@ -1041,6 +1043,8 @@ exec_proton_command() {
     STEAM_COMPAT_CLIENT_INSTALL_PATH="$(steam_root_dir)" \
     SteamAppId="${SteamAppId:-0}" \
     SteamGameId="${SteamGameId:-0}" \
+    UMU_ID="${UMU_ID:-shorin-proton-wrapper}" \
+    UMU_USE_STEAM="${UMU_USE_STEAM:-0}" \
     "$runner" "$@"
 }
 
@@ -1180,6 +1184,50 @@ auto_export_shortcuts() {
   EXPORT_SHORTCUTS_QUIET="$old_quiet"
 }
 
+prepare_mapped_drive_target() {
+  local target_path="$1" source_dir base dosdevices marker letter link
+  target_path="$(realpath -m "$target_path")"
+  source_dir="$(dirname "$target_path")"
+  base="$(basename "$target_path")"
+
+  case "$target_path" in
+    "$PREFIX/pfx/drive_c"/*)
+      workdir="$source_dir"
+      exe="./$base"
+      return 0
+      ;;
+  esac
+
+  dosdevices="$PREFIX/pfx/dosdevices"
+  marker="$PREFIX/.shorin-proton-wrapper-drive"
+  mkdir -p "$dosdevices"
+
+  if [[ -r "$marker" ]]; then
+    letter="$(sed -n '1p' "$marker")"
+    link="$dosdevices/$letter:"
+    if [[ "$letter" =~ ^[d-y]$ && ( ! -e "$link" || -L "$link" ) ]]; then
+      rm -f "$link"
+      ln -s "$source_dir" "$link"
+      workdir="$PREFIX/pfx/drive_c"
+      exe="${letter}:\\$base"
+      return 0
+    fi
+  fi
+
+  for letter in d e f g h i j k l m n o p q r s t u v w x y; do
+    link="$dosdevices/$letter:"
+    if [[ ! -e "$link" && ! -L "$link" ]]; then
+      ln -s "$source_dir" "$link"
+      printf '%s\n' "$letter" > "$marker"
+      workdir="$PREFIX/pfx/drive_c"
+      exe="${letter}:\\$base"
+      return 0
+    fi
+  done
+
+  die "no free Wine drive letter found for: $source_dir"
+}
+
 run_target() {
   local workdir exe status
   select_runner
@@ -1198,8 +1246,7 @@ run_target() {
       ;;
   esac
 
-  workdir="$(dirname "$TARGET")"
-  exe="./$(basename "$TARGET")"
+  prepare_mapped_drive_target "$TARGET"
 
   cd "$workdir"
   set +e
