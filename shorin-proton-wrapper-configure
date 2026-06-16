@@ -227,7 +227,20 @@ checkbutton check:checked {
 }
 
 checkbutton check:focus {
-  outline-color: @accent_color;
+  outline-color: alpha(@theme_fg_color, 0.28);
+  outline-style: solid;
+  outline-width: 1px;
+  outline-offset: -2px;
+  box-shadow: none;
+}
+
+checkbutton:focus,
+checkbutton:focus-within {
+  outline-color: alpha(@theme_fg_color, 0.28);
+  outline-style: solid;
+  outline-width: 1px;
+  outline-offset: -2px;
+  box-shadow: none;
 }
 """)
     display = Gdk.Display.get_default()

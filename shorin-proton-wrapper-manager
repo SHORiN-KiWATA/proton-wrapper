@@ -801,11 +801,27 @@ checkbutton check:checked {
   color: @accent_fg_color;
 }
 checkbutton check:focus {
-  outline-color: @accent_color;
+  outline-color: alpha(@theme_fg_color, 0.28);
+  outline-style: solid;
+  outline-width: 1px;
+  outline-offset: -2px;
+  box-shadow: none;
+}
+checkbutton:focus,
+checkbutton:focus-within {
+  outline-color: alpha(@theme_fg_color, 0.28);
+  outline-style: solid;
+  outline-width: 1px;
+  outline-offset: -2px;
+  box-shadow: none;
 }
 combobox:focus button {
-  outline-color: @accent_color;
-  border-color: @accent_color;
+  outline-color: alpha(@theme_fg_color, 0.28);
+  outline-style: solid;
+  outline-width: 1px;
+  outline-offset: -2px;
+  border-color: alpha(@theme_fg_color, 0.28);
+  box-shadow: none;
 }
 .compact-button {
   padding: 5px 12px;
