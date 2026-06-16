@@ -975,6 +975,47 @@ def rewrite_desktop_name(path: Path, name: str) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def rename_icon_cache_files(old_name: str, new_name: str) -> dict[str, str]:
+    old_base = safe_filename(old_name)
+    new_base = safe_filename(new_name)
+    renamed = {}
+    if old_base == new_base:
+        return renamed
+    for directory in (gui_icon_dir(), exported_icon_dir()):
+        if not directory.is_dir():
+            continue
+        for icon in list(directory.glob(f"{old_base}.png")) + list(directory.glob(f"{old_base}-*.png")):
+            suffix = icon.name[len(old_base):]
+            target = icon.with_name(f"{new_base}{suffix}")
+            if target.exists():
+                renamed[str(icon)] = str(target)
+                continue
+            try:
+                icon.rename(target)
+            except OSError:
+                continue
+            renamed[str(icon)] = str(target)
+    return renamed
+
+
+def rewrite_desktop_icon(path: Path, renamed_icons: dict[str, str]) -> None:
+    if not path.is_file() or not renamed_icons:
+        return
+    lines = []
+    changed = False
+    for line in path.read_text(errors="ignore").splitlines():
+        if line.startswith("Icon="):
+            value = line.split("=", 1)[1]
+            replacement = renamed_icons.get(value)
+            if replacement:
+                lines.append(f"Icon={replacement}")
+                changed = True
+                continue
+        lines.append(line)
+    if changed:
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def maybe_update_desktop_database() -> None:
     if not shutil_which("update-desktop-database"):
         return
@@ -1762,13 +1803,16 @@ class ManagerApp(Gtk.Application):
 
     def on_rename_app_response(self, dialog, response, app: dict[str, str], entry: Gtk.Entry) -> None:
         if response == Gtk.ResponseType.ACCEPT:
+            old_name = app_display_name(app)
             name = entry.get_text().strip() or app_display_name(app)
+            renamed_icons = rename_icon_cache_files(old_name, name)
             cache_entry = app_cache_entry(self.page_prefix("apps"), app)
             cache_entry["name"] = name
             write_cache_entry(cache_entry)
             desktop = exported_desktop_path(self.page_prefix("apps"), app)
             if desktop.is_file():
                 rewrite_desktop_name(desktop, name)
+                rewrite_desktop_icon(desktop, renamed_icons)
             self.set_status(f"{TEXT['rename']}: {name}")
         dialog.destroy()
         self.refresh_after_mutation()
