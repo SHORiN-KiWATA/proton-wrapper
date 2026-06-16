@@ -1554,6 +1554,11 @@ class ManagerApp(Gtk.Application):
         self.status_clear_source_id = 0
         return False
 
+    def refresh_after_mutation(self) -> bool:
+        self.reload_prefixes()
+        self.refresh_all()
+        return False
+
     def run_path(self, path: str, prefix: str = "", runner: str = "") -> None:
         if not path:
             return
@@ -1699,6 +1704,7 @@ class ManagerApp(Gtk.Application):
         dialog.present()
 
     def on_cache_edit_response(self, dialog, response, entry: dict[str, str], widgets: dict) -> None:
+        changed = False
         if response == Gtk.ResponseType.ACCEPT:
             entry["exe"] = widgets["exe"].get_text().strip()
             entry["prefix"] = widgets["prefix"].get_text().strip()
@@ -1712,15 +1718,15 @@ class ManagerApp(Gtk.Application):
             entry["source"] = "configured"
             write_cache_entry(entry)
             self.set_status(f"{TEXT['reconfigure']}: {entry.get('exe', '')}")
-            self.reload_prefixes()
-            self.refresh_all()
+            changed = True
         dialog.destroy()
+        if changed:
+            GLib.idle_add(self.refresh_after_mutation)
 
     def delete_cache(self, file_path: str) -> None:
         if file_path:
             Path(file_path).unlink(missing_ok=True)
-        self.reload_prefixes()
-        self.refresh_all()
+        self.refresh_after_mutation()
 
     def open_folder(self, folder: Path) -> None:
         subprocess.Popen(["xdg-open", str(folder)])
@@ -1732,7 +1738,7 @@ class ManagerApp(Gtk.Application):
         target = export_app(self.current_prefix(), app, self.wrapper, display_name)
         maybe_update_desktop_database()
         self.set_status(f"{TEXT['exported']}: {target}")
-        self.refresh_apps()
+        self.refresh_after_mutation()
 
     def prompt_rename_app(self, app: dict[str, str]) -> None:
         dialog = Gtk.Dialog(title=TEXT["rename"], transient_for=self.window, modal=True)
@@ -1765,7 +1771,7 @@ class ManagerApp(Gtk.Application):
                 rewrite_desktop_name(desktop, name)
             self.set_status(f"{TEXT['rename']}: {name}")
         dialog.destroy()
-        self.refresh_apps()
+        self.refresh_after_mutation()
 
     def delete_library_item(self, app: dict[str, str]) -> None:
         desktop = delete_exported_app(self.page_prefix("apps"), app)
@@ -1773,7 +1779,7 @@ class ManagerApp(Gtk.Application):
         Path(file_path).unlink(missing_ok=True)
         maybe_update_desktop_database()
         self.set_status(f"{TEXT['removed']}: {desktop}")
-        self.refresh_apps()
+        self.refresh_after_mutation()
 
     def kill_process(self, proc: dict[str, str], force: bool) -> None:
         try:
