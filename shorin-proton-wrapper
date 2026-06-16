@@ -29,6 +29,8 @@ GAMESCOPE_EXTRA=""
 MANGOHUD=0
 DEBUG=0
 DEBUG_LOG=""
+RUN_APP_ID=""
+RUN_LOG=""
 PREFIX_EXPLICIT=0
 RUNNER_EXPLICIT=0
 GAMESCOPE_EXPLICIT=0
@@ -46,6 +48,7 @@ RUNNER_NAMES=()
 RUNNER_PATHS=()
 DEBUG_ENV=()
 CACHED_ENV=()
+RUN_ENV=()
 declare -A RUNNER_SEEN=()
 
 [[ -n "${PROTON_PREFIX:-}" ]] && PREFIX_EXPLICIT=1
@@ -65,18 +68,67 @@ setup_debug_logging() {
 
   log_dir="$XDG_CACHE_HOME_VALUE/shorin-proton-wrapper/logs"
   mkdir -p "$log_dir"
-  name="${TARGET:-${ACTION:-command}}"
-  name="$(basename "${name:-command}")"
-  name="$(printf '%s' "$name" | tr -c 'A-Za-z0-9._-' '_')"
+  DEBUG_ENV=("PROTON_LOG=1" "PROTON_LOG_DIR=$log_dir")
+  [[ -n "$TARGET" ]] && return 0
+
+  name="${ACTION:-command}"
+  name="$(safe_log_name "$name")"
   timestamp="$(date +%Y%m%d-%H%M%S)"
   DEBUG_LOG="$log_dir/$timestamp-$name.log"
-  DEBUG_ENV=("PROTON_LOG=1" "PROTON_LOG_DIR=$log_dir")
-
   exec > >(tee -a "$DEBUG_LOG") 2>&1
   printf 'Debug log: %s\n' "$DEBUG_LOG"
   printf 'Command: shorin-proton-wrapper'
   printf ' %q' "${ORIGINAL_ARGS[@]}"
   printf '\n'
+}
+
+safe_log_name() {
+  local name="$1"
+  name="$(basename "${name:-command}")"
+  printf '%s' "$name" | tr -c 'A-Za-z0-9._-' '_'
+}
+
+wrapper_app_id() {
+  local prefix="$1" target="$2"
+  python3 - "$prefix" "$target" <<'PY'
+import hashlib
+import sys
+
+print(hashlib.sha256((sys.argv[1] + "\0" + sys.argv[2]).encode()).hexdigest()[:10])
+PY
+}
+
+setup_run_logging() {
+  local log_dir
+  RUN_APP_ID="$(wrapper_app_id "$PREFIX" "$TARGET")"
+  log_dir="$XDG_CACHE_HOME_VALUE/shorin-proton-wrapper/logs/$RUN_APP_ID"
+  mkdir -p "$log_dir"
+  rm -f "$log_dir"/*.log
+  RUN_LOG="$log_dir/latest.log"
+  RUN_ENV=(
+    "SHORIN_PROTON_WRAPPER_APP_ID=$RUN_APP_ID"
+    "SHORIN_PROTON_WRAPPER_APP_PATH=$TARGET"
+    "SHORIN_PROTON_WRAPPER_PREFIX=$PREFIX"
+    "SHORIN_PROTON_WRAPPER_LOG=$RUN_LOG"
+  )
+  if [[ $DEBUG -eq 1 ]]; then
+    DEBUG_ENV=("PROTON_LOG=1" "PROTON_LOG_DIR=$log_dir")
+  fi
+
+  exec > >(tee -a "$RUN_LOG") 2>&1
+  printf 'Log: %s\n' "$RUN_LOG"
+  printf 'Command: shorin-proton-wrapper'
+  printf ' %q' "${ORIGINAL_ARGS[@]}"
+  printf '\n'
+  printf 'App ID: %s\n' "$RUN_APP_ID"
+  printf 'Target: %s\n' "$TARGET"
+  printf 'Prefix: %s\n' "$PREFIX"
+  printf 'Runner: %s\n' "$RESOLVED_RUNNER_PATH"
+  printf 'Runner type: %s\n' "$RESOLVED_RUNNER_TYPE"
+  if [[ $DEBUG -eq 1 ]]; then
+    printf 'Proton debug log dir: %s\n' "$log_dir"
+  fi
+  printf -- '--- output ---\n'
 }
 
 usage_en() {
@@ -1185,6 +1237,7 @@ run_proton_command() {
     "${MANGOHUD_ENV[@]}" \
     "${DEBUG_ENV[@]}" \
     "${CACHED_ENV[@]}" \
+    "${RUN_ENV[@]}" \
     STEAM_COMPAT_DATA_PATH="$PREFIX" \
     STEAM_COMPAT_CLIENT_INSTALL_PATH="$(steam_root_dir)" \
     SteamAppId="${SteamAppId:-0}" \
@@ -1203,6 +1256,7 @@ exec_proton_command() {
     "${MANGOHUD_ENV[@]}" \
     "${DEBUG_ENV[@]}" \
     "${CACHED_ENV[@]}" \
+    "${RUN_ENV[@]}" \
     STEAM_COMPAT_DATA_PATH="$PREFIX" \
     STEAM_COMPAT_CLIENT_INSTALL_PATH="$(steam_root_dir)" \
     SteamAppId="${SteamAppId:-0}" \
@@ -1217,7 +1271,7 @@ run_wine_command() {
   shift
   mkdir -p "$PREFIX/pfx"
   prepare_mangohud_env
-  env "${MANGOHUD_ENV[@]}" "${DEBUG_ENV[@]}" "${CACHED_ENV[@]}" WINEPREFIX="$PREFIX/pfx" "$runner" "$@"
+  env "${MANGOHUD_ENV[@]}" "${DEBUG_ENV[@]}" "${CACHED_ENV[@]}" "${RUN_ENV[@]}" WINEPREFIX="$PREFIX/pfx" "$runner" "$@"
 }
 
 exec_wine_command() {
@@ -1225,7 +1279,7 @@ exec_wine_command() {
   shift
   mkdir -p "$PREFIX/pfx"
   prepare_mangohud_env
-  exec env "${MANGOHUD_ENV[@]}" "${DEBUG_ENV[@]}" "${CACHED_ENV[@]}" WINEPREFIX="$PREFIX/pfx" "$runner" "$@"
+  exec env "${MANGOHUD_ENV[@]}" "${DEBUG_ENV[@]}" "${CACHED_ENV[@]}" "${RUN_ENV[@]}" WINEPREFIX="$PREFIX/pfx" "$runner" "$@"
 }
 
 validate_resolution() {
@@ -1305,6 +1359,7 @@ run_gamescope_proton_command() {
     "${MANGOHUD_ENV[@]}" \
     "${DEBUG_ENV[@]}" \
     "${CACHED_ENV[@]}" \
+    "${RUN_ENV[@]}" \
     STEAM_COMPAT_DATA_PATH="$PREFIX" \
     STEAM_COMPAT_CLIENT_INSTALL_PATH="$(steam_root_dir)" \
     SteamAppId="${SteamAppId:-0}" \
@@ -1320,7 +1375,7 @@ run_gamescope_wine_command() {
   mkdir -p "$PREFIX/pfx"
   build_gamescope_args
   prepare_mangohud_env
-  env "${MANGOHUD_ENV[@]}" "${DEBUG_ENV[@]}" "${CACHED_ENV[@]}" WINEPREFIX="$PREFIX/pfx" gamescope "${GAMESCOPE_ARGS[@]}" -- "$runner" "$@"
+  env "${MANGOHUD_ENV[@]}" "${DEBUG_ENV[@]}" "${CACHED_ENV[@]}" "${RUN_ENV[@]}" WINEPREFIX="$PREFIX/pfx" gamescope "${GAMESCOPE_ARGS[@]}" -- "$runner" "$@"
 }
 
 init_prefix() {
@@ -1528,14 +1583,20 @@ run_target() {
   select_runner
   ensure_initialized
   record_default_association "$TARGET"
+  setup_run_logging
 
   case "${TARGET,,}" in
     *.lnk)
+      set +e
       if [[ "$RESOLVED_RUNNER_TYPE" == "proton" ]]; then
-        exec_proton_command "$RESOLVED_RUNNER_PATH" waitforexitandrun start /unix "$TARGET" "${TARGET_ARGS[@]}"
+        run_proton_command "$RESOLVED_RUNNER_PATH" waitforexitandrun start /unix "$TARGET" "${TARGET_ARGS[@]}"
       else
-        exec_wine_command "$RESOLVED_RUNNER_PATH" start /unix "$TARGET" "${TARGET_ARGS[@]}"
+        run_wine_command "$RESOLVED_RUNNER_PATH" start /wait /unix "$TARGET" "${TARGET_ARGS[@]}"
       fi
+      status=$?
+      set -e
+      printf -- '--- exit: %s ---\n' "$status"
+      exit "$status"
       ;;
   esac
 
@@ -1559,6 +1620,7 @@ run_target() {
     status=$?
   fi
   set -e
+  printf -- '--- exit: %s ---\n' "$status"
   exit "$status"
 }
 

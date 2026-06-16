@@ -201,10 +201,22 @@ def install_css():
   padding: 14px;
 }
 
-entry:focus {
-  outline-color: @accent_color;
-  border-color: @accent_color;
-  box-shadow: none;
+entry:focus,
+entry:focus-within {
+  outline-color: alpha(@theme_fg_color, 0.28);
+  outline-style: solid;
+  outline-width: 1px;
+  outline-offset: -2px;
+  border-color: alpha(@theme_fg_color, 0.28);
+  box-shadow: inset 0 0 0 1px alpha(@theme_fg_color, 0.28);
+}
+
+selection,
+textview text selection,
+label selection,
+entry selection {
+  background-color: alpha(@theme_fg_color, 0.18);
+  color: @theme_fg_color;
 }
 
 checkbutton check:checked {

@@ -47,6 +47,10 @@ TEXT = {
     "add_config": "添加配置" if ZH else "Add Config",
     "cache": "已保存配置" if ZH else "Saved Configs",
     "run": "运行" if ZH else "Run",
+    "close": "关闭" if ZH else "Close",
+    "log": "日志" if ZH else "Log",
+    "no_log": "暂无日志" if ZH else "No log yet",
+    "open_log_dir": "打开日志目录" if ZH else "Open Log Directory",
     "export": "导出到应用列表" if ZH else "Export to App List",
     "cache_dirs": "缓存目录" if ZH else "Cache Dirs",
     "open_assoc_dir": "打开配置缓存目录" if ZH else "Open Config Cache Directory",
@@ -114,6 +118,25 @@ def exported_icon_dir() -> Path:
 
 def exported_app_dir() -> Path:
     return data_home() / "applications" / "shorin-proton-wrapper"
+
+
+def run_log_root() -> Path:
+    return cache_home() / "shorin-proton-wrapper" / "logs"
+
+
+def app_log_dir(app_id: str) -> Path:
+    return run_log_root() / app_id
+
+
+def latest_log_for_app(app_id: str) -> Path | None:
+    directory = app_log_dir(app_id)
+    latest = directory / "latest.log"
+    if latest.is_file():
+        return latest
+    if not directory.is_dir():
+        return None
+    logs = sorted(directory.glob("*.log"), key=lambda item: item.stat().st_mtime, reverse=True)
+    return logs[0] if logs else None
 
 
 def resolve_sibling(name: str) -> str:
@@ -735,10 +758,41 @@ def install_css() -> None:
 .prefix-label {
   color: alpha(@theme_fg_color, 0.72);
 }
-entry:focus {
-  outline-color: @accent_color;
-  border-color: @accent_color;
+entry:focus,
+entry:focus-within {
+  outline-color: alpha(@theme_fg_color, 0.28);
+  outline-style: solid;
+  outline-width: 1px;
+  outline-offset: -2px;
+  border-color: alpha(@theme_fg_color, 0.28);
+  box-shadow: inset 0 0 0 1px alpha(@theme_fg_color, 0.28);
+}
+button:focus,
+menubutton:focus > button,
+row:focus,
+row:focus-within,
+.nav-button:focus,
+.compact-button:focus,
+.menu-button:focus {
+  outline-color: alpha(@theme_fg_color, 0.28);
+  outline-style: solid;
+  outline-width: 1px;
+  outline-offset: -2px;
   box-shadow: none;
+}
+row:focus,
+row:focus-within {
+  border-color: alpha(@theme_fg_color, 0.18);
+}
+selection {
+  background-color: alpha(@theme_fg_color, 0.18);
+  color: @theme_fg_color;
+}
+textview text selection,
+label selection,
+entry selection {
+  background-color: alpha(@theme_fg_color, 0.18);
+  color: @theme_fg_color;
 }
 checkbutton check:checked {
   background-color: @accent_bg_color;
@@ -1058,11 +1112,16 @@ def scan_processes(prefix: Path) -> list[dict[str, str]]:
             environ = (proc / "environ").read_bytes().split(b"\0")
         except OSError:
             continue
+        env = {}
         matched = False
         for item in environ:
+            if b"=" in item:
+                key, value = item.split(b"=", 1)
+                env[key.decode(errors="replace")] = value.decode(errors="replace")
             if item == f"WINEPREFIX={wineprefix}".encode() or item == f"STEAM_COMPAT_DATA_PATH={steam_data}".encode():
                 matched = True
-                break
+        if env.get("SHORIN_PROTON_WRAPPER_PREFIX") == str(prefix):
+            matched = True
         if not matched:
             continue
         try:
@@ -1073,8 +1132,29 @@ def scan_processes(prefix: Path) -> list[dict[str, str]]:
             name = (proc / "comm").read_text(errors="replace").strip()
         except OSError:
             name = ""
-        result.append({"pid": str(pid), "name": name, "command": command or name, "age": process_start_time(pid)})
+        result.append({
+            "pid": str(pid),
+            "name": name,
+            "command": command or name,
+            "age": process_start_time(pid),
+            "app_id": env.get("SHORIN_PROTON_WRAPPER_APP_ID", ""),
+            "app_path": env.get("SHORIN_PROTON_WRAPPER_APP_PATH", ""),
+            "log": env.get("SHORIN_PROTON_WRAPPER_LOG", ""),
+        })
     return sorted(result, key=lambda item: int(item["pid"]))
+
+
+def running_apps_for_prefix(prefix: Path) -> dict[str, dict[str, object]]:
+    running: dict[str, dict[str, object]] = {}
+    for proc in scan_processes(prefix):
+        app_id = proc.get("app_id", "")
+        if not app_id:
+            continue
+        item = running.setdefault(app_id, {"pids": [], "log": proc.get("log", ""), "path": proc.get("app_path", "")})
+        item["pids"].append(proc["pid"])
+        if proc.get("log"):
+            item["log"] = proc["log"]
+    return running
 
 
 def kill_pid(pid: int, force: bool = False) -> None:
@@ -1133,6 +1213,7 @@ class ManagerApp(Gtk.Application):
         self.nav_buttons = {}
         self.apps_list = None
         self.process_list = None
+        self.apps_signature = None
         self.status_label = None
         self.status_clear_source_id = 0
         self.refresh_source_id = 0
@@ -1321,6 +1402,8 @@ class ManagerApp(Gtk.Application):
         visible = self.stack.get_visible_child_name() if self.stack else ""
         if visible == "processes":
             self.refresh_processes()
+        elif visible == "apps":
+            self.refresh_apps()
         return True
 
     def clear_list(self, list_box: Gtk.ListBox) -> None:
@@ -1534,21 +1617,56 @@ class ManagerApp(Gtk.Application):
         row.set_child(label)
         return row
 
-    def refresh_apps(self) -> None:
-        self.clear_list(self.apps_list)
+    def apps_state_signature(self, prefix: Path, apps: list[dict[str, str]], running: dict[str, dict[str, object]]) -> tuple:
+        items = []
+        for app in apps:
+            app_id = app_identity(prefix, Path(app["path"]))
+            running_app = running.get(app_id)
+            log_path = Path(str(running_app.get("log", ""))) if running_app and running_app.get("log") else latest_log_for_app(app_id)
+            items.append((
+                app_id,
+                app_display_name(app),
+                app.get("path", ""),
+                app.get("runner", ""),
+                app.get("kind", ""),
+                bool(running_app),
+                tuple(sorted(running_app.get("pids", []))) if running_app else (),
+                str(log_path or ""),
+            ))
+        return (str(prefix), tuple(items))
+
+    def refresh_apps(self, force: bool = False) -> None:
         prefix = self.page_prefix("apps")
         apps = scan_apps(prefix)
+        running = running_apps_for_prefix(prefix)
+        signature = self.apps_state_signature(prefix, apps, running)
+        if not force and signature == self.apps_signature:
+            return
+        self.apps_signature = signature
+        self.clear_list(self.apps_list)
         if not apps:
             self.apps_list.append(self.empty_row(TEXT["no_apps"]))
             return
         for app in apps:
+            app_id = app_identity(prefix, Path(app["path"]))
+            running_app = running.get(app_id)
+            log_path = Path(str(running_app.get("log", ""))) if running_app and running_app.get("log") else latest_log_for_app(app_id)
             row = Gtk.ListBoxRow()
             box = self.row_box()
             box.append(self.icon_widget(icon_for_app(prefix, app)))
             box.append(self.text_column(app_display_name(app), app["path"]))
-            run = self.compact_button(TEXT["run"], "run-button")
-            run.connect("clicked", lambda _b, item=app, item_prefix=prefix: self.run_path(item["path"], str(item_prefix), item.get("runner", "")))
-            box.append(run)
+            log_button = self.compact_button(TEXT["log"])
+            log_button.set_sensitive(bool(log_path and log_path.exists()))
+            log_button.connect("clicked", lambda _b, item=app, path=log_path: self.show_log_dialog(app_display_name(item), path))
+            box.append(log_button)
+            if running_app:
+                close = self.compact_button(TEXT["close"], "menu-item-danger")
+                close.connect("clicked", lambda _b, app_id_value=app_id: self.close_running_app(app_id_value))
+                box.append(close)
+            else:
+                run = self.compact_button(TEXT["run"], "run-button")
+                run.connect("clicked", lambda _b, item=app, item_prefix=prefix: self.run_path(item["path"], str(item_prefix), item.get("runner", "")))
+                box.append(run)
             if app.get("kind") == "saved-config":
                 config = self.compact_button(TEXT["reconfigure"])
                 config.connect("clicked", lambda _b, item=app: self.edit_cache_entry(item))
@@ -1597,7 +1715,8 @@ class ManagerApp(Gtk.Application):
 
     def refresh_after_mutation(self) -> bool:
         self.reload_prefixes()
-        self.refresh_all()
+        self.refresh_apps(force=True)
+        self.refresh_processes()
         return False
 
     def run_path(self, path: str, prefix: str = "", runner: str = "") -> None:
@@ -1609,6 +1728,67 @@ class ManagerApp(Gtk.Application):
         command.append(path)
         subprocess.Popen(command)
         self.set_status(f"{TEXT['run']}: {path}")
+        GLib.timeout_add(800, self.refresh_apps_once)
+
+    def refresh_apps_once(self) -> bool:
+        self.refresh_apps(force=True)
+        return False
+
+    def close_running_app(self, app_id: str) -> None:
+        killed = 0
+        for proc in scan_processes(self.page_prefix("apps")):
+            if proc.get("app_id") != app_id:
+                continue
+            try:
+                kill_pid(int(proc["pid"]), True)
+                killed += 1
+            except OSError:
+                pass
+        self.set_status(f"{TEXT['close']}: {killed}")
+        self.refresh_apps(force=True)
+        self.refresh_processes()
+
+    def show_log_dialog(self, title: str, log_path: Path | None) -> None:
+        if not log_path or not log_path.exists():
+            display_message(self.window, TEXT["log"], TEXT["no_log"])
+            return
+        dialog = Gtk.Dialog(title=f"{TEXT['log']} · {title}", transient_for=self.window, modal=True)
+        dialog.set_default_size(900, 620)
+        dialog.add_button(TEXT["cancel"], Gtk.ResponseType.CLOSE)
+        content = dialog.get_content_area()
+        content.set_spacing(8)
+        content.set_margin_top(12)
+        content.set_margin_bottom(12)
+        content.set_margin_start(12)
+        content.set_margin_end(12)
+
+        text = Gtk.TextView()
+        text.set_editable(False)
+        text.set_cursor_visible(False)
+        text.set_monospace(True)
+        buffer = text.get_buffer()
+
+        def load_log() -> None:
+            try:
+                buffer.set_text(log_path.read_text(errors="replace"))
+            except OSError as exc:
+                buffer.set_text(str(exc))
+
+        load_log()
+        scrolled = Gtk.ScrolledWindow(hexpand=True, vexpand=True)
+        scrolled.set_child(text)
+        content.append(scrolled)
+
+        actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        refresh = self.compact_button(TEXT["refresh"])
+        refresh.connect("clicked", lambda _button: load_log())
+        open_dir = self.compact_button(TEXT["open_log_dir"])
+        open_dir.connect("clicked", lambda _button: self.open_folder(log_path.parent))
+        actions.append(refresh)
+        actions.append(open_dir)
+        content.append(actions)
+        dialog.connect("response", lambda d, _response: d.destroy())
+        dialog.present()
 
     def reconfigure(self, exe: str) -> None:
         if not exe:
