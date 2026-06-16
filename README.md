@@ -1,6 +1,6 @@
 # proton-wrapper
 
-一直以来，用 Proton 运行 exe 大多通过添加非 Steam 游戏或者Lutris的之类的方式，难以做到`双击直接运行`般无缝的交互体验，所以我制作了 `shorin-proton-wrapper`。最大的特点是安装后可以直接运行 exe，无须任何前置操作。
+一直以来，用 Proton 运行 exe 大多通过添加非 Steam 游戏或者Lutris之类的方式，难以做到`双击直接运行`般无缝的交互体验，所以我制作了 `shorin-proton-wrapper`。最大的特点是安装后可以直接运行 exe，无须任何前置操作。
 
 >注意，这只是个包装器，原本 Proton 运行不了的软件依旧会运行不了。
 
