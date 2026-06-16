@@ -598,7 +598,15 @@ try_select_runner() {
 }
 
 select_runner() {
-  try_select_runner || die "no Proton or Wine runner found. Use --runner PATH, or install one with shorin-proton-wrapper --install dw"
+  if try_select_runner; then
+    return 0
+  fi
+
+  if [[ -n "$RUNNER_ARG" ]]; then
+    die "no Proton or Wine runner found. Use --runner PATH, or install one with shorin-proton-wrapper --install dw"
+  fi
+
+  ensure_runner_product dw || die "failed to install runner: dw"
 }
 
 list_runners() {

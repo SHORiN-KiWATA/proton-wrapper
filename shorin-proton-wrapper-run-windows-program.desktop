@@ -5,6 +5,6 @@ Name[zh_CN]=运行Windows软件
 Comment=Run Windows executables with Proton
 Exec=shorin-proton-wrapper %f
 Icon=shorin-proton
-MimeType=application/x-ms-dos-executable;application/x-msdownload;
+MimeType=application/x-ms-dos-executable;application/x-msdownload;application/vnd.microsoft.portable-executable;
 Terminal=false
 NoDisplay=true
