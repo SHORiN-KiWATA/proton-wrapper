@@ -12,7 +12,7 @@
 
 >`shorin-proton-wrapper-configure`
 
-为了兼顾自由度，我额外做了一个名为 `设置Windows程序运行环境` 的打开方式。支持自定义前置环境目录、Proton 版本、MangoHud 帧数/性能屏显、GameScope 合成器运行等常用设置项。
+为了兼顾自由度，我额外做了一个名为 `设置Windows程序运行环境` 的打开方式。支持自定义前置环境目录、Proton 版本、MangoHud、GameScope 等常用设置项。
 
 ![](./pics/2.png)
 
@@ -30,7 +30,7 @@
 
 ![](./pics/5.png)
 
-在进程卡死或者后它进程无法退出的时候可以在进程页面强制退出。
+在进程卡死或者后台进程无法退出的时候可以在进程页面强制退出。
 
 ![](./pics/6.png)
 
