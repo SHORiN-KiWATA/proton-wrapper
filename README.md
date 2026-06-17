@@ -8,7 +8,7 @@
 
 灵感来自 Wine 的配置过程。安装 Wine 后运行 `winecfg` 会在 `~/.wine` 目录初始化前置运行环境。我借鉴并改良了这个设计，运行 exe 的默认行为是检测 `~/.proton` 是否存在，如果不存在则静默初始化。考虑到国内二游盛行，我选择了 `DW-Proton` 作为默认运行器。
 
-## 设置Widnows程序运行环境
+## 设置Windows程序运行环境
 
 >`shorin-proton-wrapper-configure`
 
@@ -22,7 +22,7 @@
 
 ![](./pics/4.png)
 
-## Shorin Prton Wrapper 管理器
+## Shorin Proton Wrapper 管理器
 
 >`shorin-proton-wrapper-manager`
 
