@@ -493,6 +493,8 @@ class SelectorApp(Gtk.Application):
         label.set_halign(Gtk.Align.START)
         progress_bar = Gtk.ProgressBar()
         progress_bar.set_show_text(True)
+        progress_bar.set_fraction(0.0)
+        progress_bar.set_text("0%")
         status_label = Gtk.Label(label="")
         status_label.add_css_class("dim-label")
         status_label.set_halign(Gtk.Align.START)
@@ -506,12 +508,17 @@ class SelectorApp(Gtk.Application):
 
         import threading
 
-        stop_pulse = threading.Event()
+        stop_progress = threading.Event()
+        progress = [0.0]
 
-        def pulse_loop():
-            while not stop_pulse.is_set():
-                GLib.idle_add(lambda: progress_bar.pulse())
-                stop_pulse.wait(0.08)
+        def fake_progress_loop():
+            while not stop_progress.is_set():
+                if progress[0] < 0.95:
+                    remaining = 0.95 - progress[0]
+                    progress[0] = min(progress[0] + max(remaining * 0.025, 0.003), 0.95)
+                    GLib.idle_add(lambda value=progress[0]: progress_bar.set_fraction(value))
+                    GLib.idle_add(lambda value=progress[0]: progress_bar.set_text(f"{int(value * 100)}%"))
+                stop_progress.wait(0.2)
 
         def run_download():
             try:
@@ -522,11 +529,9 @@ class SelectorApp(Gtk.Application):
                     text=True,
                     bufsize=1,
                 )
-                last_line = ""
                 for line in proc.stdout:
                     stripped = line.strip()
                     if stripped:
-                        last_line = stripped
                         GLib.idle_add(lambda t=stripped: status_label.set_text(t))
                 proc.wait()
                 return proc.returncode == 0
@@ -534,12 +539,16 @@ class SelectorApp(Gtk.Application):
                 return False
 
         def on_download_done(success):
-            stop_pulse.set()
-            progress_window.close()
+            stop_progress.set()
             if not success:
+                progress_window.close()
                 self.show_error(TEXT["download_failed"])
                 return
+            progress_bar.set_fraction(1.0)
+            progress_bar.set_text("100%")
+            status_label.set_text("")
             self.runners = load_runners(self.wrapper)
+            progress_window.close()
             if not self.runners:
                 self.show_error(TEXT["no_runner"])
                 return
@@ -551,10 +560,10 @@ class SelectorApp(Gtk.Application):
             self.update_runner_detail()
 
         def thread_wrapper():
-            pulse_thread = threading.Thread(target=pulse_loop, daemon=True)
-            pulse_thread.start()
+            progress_thread = threading.Thread(target=fake_progress_loop, daemon=True)
+            progress_thread.start()
             success = run_download()
-            stop_pulse.set()
+            stop_progress.set()
             GLib.idle_add(lambda: on_download_done(success))
 
         thread = threading.Thread(target=thread_wrapper, daemon=True)

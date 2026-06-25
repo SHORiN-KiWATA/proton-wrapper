@@ -31,6 +31,8 @@ DEBUG=0
 DEBUG_LOG=""
 RUN_APP_ID=""
 RUN_LOG=""
+INIT_NOTIFY_STOP=""
+INIT_TIMEOUT_SECONDS="${PROTON_INIT_TIMEOUT:-900}"
 PREFIX_EXPLICIT=0
 RUNNER_EXPLICIT=0
 GAMESCOPE_EXPLICIT=0
@@ -1414,25 +1416,30 @@ run_gamescope_wine_command() {
 
 notify_init() {
   command -v notify-send >/dev/null 2>&1 || return 0
-  local lang
+  local lang title message interval elapsed
   lang="$(ui_lang)"
+  title="shorin-proton-wrapper"
   if [[ "$lang" == "zh" ]]; then
-    notify-send -i shorin-proton -t 0 \
-      "shorin-proton-wrapper" \
-      "正在初始化运行环境，首次使用需要下载运行器，请耐心等待..." 2>/dev/null &
-    printf '%s' $! > /tmp/.shorin-proton-wrapper-notify.pid
+    message="正在初始化运行环境，首次使用需要下载运行器，请耐心等待..."
   else
-    notify-send -i shorin-proton -t 0 \
-      "shorin-proton-wrapper" \
-      "Initializing runtime environment. First run requires downloading a runner, please wait..." 2>/dev/null &
-    printf '%s' $! > /tmp/.shorin-proton-wrapper-notify.pid
+    message="Initializing runtime environment. First run may need to download a runner, please wait..."
   fi
+  INIT_NOTIFY_STOP="$(mktemp -t shorin-proton-wrapper-init.XXXXXX)" || return 0
+  interval=30
+  elapsed=0
+  (
+    while [[ -e "$INIT_NOTIFY_STOP" && $elapsed -lt "$INIT_TIMEOUT_SECONDS" ]]; do
+      notify-send -i shorin-proton -t 10000 "$title" "$message" 2>/dev/null || true
+      sleep "$interval"
+      elapsed=$((elapsed + interval))
+    done
+  ) &
+  INIT_NOTIFY_PID=$!
 }
 
 notify_init_done() {
   command -v notify-send >/dev/null 2>&1 || return 0
-  local pidfile="/tmp/.shorin-proton-wrapper-notify.pid"
-  [[ -f "$pidfile" ]] && kill "$(cat "$pidfile")" 2>/dev/null; rm -f "$pidfile"
+  [[ -n "$INIT_NOTIFY_STOP" ]] && rm -f "$INIT_NOTIFY_STOP"
   local lang
   lang="$(ui_lang)"
   if [[ "$lang" == "zh" ]]; then
@@ -1448,13 +1455,46 @@ notify_init_done() {
 
 init_prefix() {
   select_init_runner
+  local status
   set +e
   if [[ "$RESOLVED_RUNNER_TYPE" == "proton" ]]; then
-    run_proton_command "$RESOLVED_RUNNER_PATH" run wineboot -u
+    timeout "$INIT_TIMEOUT_SECONDS" env \
+      "${DEBUG_ENV[@]}" \
+      "${CACHED_ENV[@]}" \
+      "${RUN_ENV[@]}" \
+      STEAM_COMPAT_DATA_PATH="$PREFIX" \
+      STEAM_COMPAT_CLIENT_INSTALL_PATH="$(steam_root_dir)" \
+      SteamAppId="${SteamAppId:-0}" \
+      SteamGameId="${SteamGameId:-0}" \
+      UMU_ID="${UMU_ID:-shorin-proton-wrapper}" \
+      UMU_USE_STEAM="${UMU_USE_STEAM:-0}" \
+      "$RESOLVED_RUNNER_PATH" run wineboot -u
   else
-    run_wine_command "$RESOLVED_RUNNER_PATH" wineboot -u
+    mkdir -p "$PREFIX/pfx"
+    timeout "$INIT_TIMEOUT_SECONDS" env \
+      "${DEBUG_ENV[@]}" \
+      "${CACHED_ENV[@]}" \
+      "${RUN_ENV[@]}" \
+      WINEPREFIX="$PREFIX/pfx" \
+      "$RESOLVED_RUNNER_PATH" wineboot -u
   fi
+  status=$?
   set -e
+  notify_init_done
+  if [[ $status -eq 124 ]]; then
+    if [[ "$(ui_lang)" == "zh" ]]; then
+      die "前置环境初始化超时，请稍后重试"
+    else
+      die "prefix initialization timed out, please try again later"
+    fi
+  fi
+  if [[ $status -ne 0 && ! -d "$PREFIX/pfx" ]]; then
+    if [[ "$(ui_lang)" == "zh" ]]; then
+      die "前置环境初始化失败 (退出码: $status)"
+    else
+      die "prefix initialization failed (exit code: $status)"
+    fi
+  fi
 }
 
 ensure_initialized() {
