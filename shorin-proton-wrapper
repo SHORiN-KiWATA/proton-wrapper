@@ -140,7 +140,6 @@ Options:
   --init                  initialize prefix, default ~/.proton
   -p, --prefix DIR        prefix directory, initialize if needed
   --status                show prefix information
-  --doctor                check system dependencies and report missing packages
   --list-runner           list installed runners
   --runner PATH|ge|dw     use specified runner
   --install ge|dw         install runner to ~/.local/share/proton/runners
@@ -182,7 +181,6 @@ usage_zh() {
   --init                  初始化，默认路径 ~/.proton
   -p, --prefix 目录       指定前置环境路径，若不存在则初始化
   --status                显示前置环境信息
-  --doctor                检查系统依赖并报告缺失的包
   --list-runner           列出已安装的运行器
   --runner 路径|ge|dw     指定运行器
   --install ge|dw         安装运行器，默认安装至 ~/.local/share/proton/runners
@@ -1380,358 +1378,22 @@ run_gamescope_wine_command() {
   env "${MANGOHUD_ENV[@]}" "${DEBUG_ENV[@]}" "${CACHED_ENV[@]}" "${RUN_ENV[@]}" WINEPREFIX="$PREFIX/pfx" gamescope "${GAMESCOPE_ARGS[@]}" -- "$runner" "$@"
 }
 
-DEPENDENCIES_CORE_32=(
-  lib32-alsa-lib
-  lib32-mpg123
-  lib32-libvorbis
-  lib32-opus
-  lib32-libvpx
-)
-
-DEPENDENCIES_CORE_64=(
-  gst-plugins-base-libs
-  mpg123
-  libvorbis
-  opus
-  libvpx
-)
-
-DEPENDENCY_FONTS=(ttf-liberation)
-
-is_multilib_enabled() {
-  grep -q '^\[multilib\]' /etc/pacman.conf 2>/dev/null
-}
-
-has_libpulse_64() {
-  pacman -Qi libpulse &>/dev/null
-}
-
-is_package_installed() {
-  pacman -Qi "$1" &>/dev/null
-}
-
-collect_missing_dependencies() {
-  local missing=()
-  local pkg
-
-  for pkg in "${DEPENDENCIES_CORE_32[@]}"; do
-    is_package_installed "$pkg" || missing+=("$pkg")
-  done
-
-  if has_libpulse_64; then
-    is_package_installed lib32-libpulse || missing+=(lib32-libpulse)
-  else
-    is_package_installed lib32-alsa-plugins || missing+=(lib32-alsa-plugins)
-  fi
-
-  for pkg in "${DEPENDENCIES_CORE_64[@]}"; do
-    is_package_installed "$pkg" || missing+=("$pkg")
-  done
-
-  for pkg in "${DEPENDENCY_FONTS[@]}"; do
-    is_package_installed "$pkg" || missing+=("$pkg")
-  done
-
-  printf '%s\n' "${missing[@]}"
-}
-
-enable_multilib_and_sync() {
-  if is_multilib_enabled; then
-    return 0
-  fi
-
+notify_init() {
+  command -v notify-send >/dev/null 2>&1 || return 0
   local lang
   lang="$(ui_lang)"
-
-  if ! command -v pkexec >/dev/null 2>&1; then
-    if [[ "$lang" == "zh" ]]; then
-      die "[multilib] 仓库未启用，且未找到 pkexec。
-请手动启用 multilib：
-  sudo sed -i '/\[multilib\]/,/Include/'\"'s/^#//' /etc/pacman.conf
-  sudo pacman -Sy"
-    else
-      die "[multilib] repository is not enabled, and pkexec is not available.
-Please enable multilib manually:
-  sudo sed -i '/\[multilib\]/,/Include/'\"'s/^#//' /etc/pacman.conf
-  sudo pacman -Sy"
-    fi
-  fi
-
   if [[ "$lang" == "zh" ]]; then
-    printf '正在启用 [multilib] 仓库...\n'
+    notify-send -i shorin-proton -t 0 \
+      "shorin-proton-wrapper" \
+      "正在初始化运行环境，首次使用需要下载运行器，请耐心等待..." 2>/dev/null &
   else
-    printf 'Enabling [multilib] repository...\n'
-  fi
-
-  pkexec bash -c "sed -i '/\\[multilib\\]/,/Include/''s/^#//' /etc/pacman.conf && pacman -Sy" || die "failed to enable multilib"
-}
-
-gui_yes_no() {
-  local title="$1" message="$2"
-
-  if command -v zenity >/dev/null 2>&1; then
-    zenity --question --title="$title" --text="$message" --width=450 2>/dev/null
-    return $?
-  fi
-
-  python3 - "$title" "$message" <<'PY'
-import sys
-import gi
-gi.require_version("Gtk", "4.0")
-from gi.repository import Gtk, GLib
-
-
-class DialogApp(Gtk.Application):
-    def __init__(self):
-        super().__init__(application_id="io.github.shorin.proton_wrapper_depcheck")
-        self.result = False
-
-    def do_activate(self):
-        window = Gtk.ApplicationWindow(application=self)
-        window.set_default_size(1, 1)
-        window.set_visible(False)
-        dialog = Gtk.MessageDialog(
-            transient_for=window,
-            modal=True,
-            message_type=Gtk.MessageType.QUESTION,
-            buttons=Gtk.ButtonsType.YES_NO,
-            text=sys.argv[1],
-            secondary_text=sys.argv[2],
-        )
-        dialog.connect("response", self.on_response)
-        dialog.present()
-
-    def on_response(self, dialog, response):
-        self.result = response == Gtk.ResponseType.YES
-        dialog.close()
-        self.quit()
-
-
-app = DialogApp()
-app.run([])
-sys.exit(0 if app.result else 1)
-PY
-}
-
-ensure_dependencies() {
-  local missing
-  missing="$(collect_missing_dependencies)"
-  [[ -z "$missing" ]] && return 0
-
-  local lang
-  lang="$(ui_lang)"
-  local missing_list
-  missing_list="$(echo "$missing" | tr '\n' ' ' | sed 's/ $//')"
-
-  if [[ "$lang" == "zh" ]]; then
-    local title="缺少运行依赖"
-    local msg="Proton 运行 Windows 程序需要以下依赖包：\n\n${missing_list}\n\n是否现在自动安装？\n（需要管理员密码）"
-  else
-    local title="Missing Dependencies"
-    local msg="Proton requires these packages to run Windows programs:\n\n${missing_list}\n\nInstall now?\n(administrator password required)"
-  fi
-
-  if ! command -v pkexec >/dev/null 2>&1; then
-    if [[ "$lang" == "zh" ]]; then
-      printf 'shorin-proton-wrapper: 缺少依赖包，请手动安装：\n  sudo pacman -S %s\n' "$missing_list" >&2
-    else
-      printf 'shorin-proton-wrapper: missing dependencies, please install manually:\n  sudo pacman -S %s\n' "$missing_list" >&2
-    fi
-    return 0
-  fi
-
-  if [[ -t 0 ]]; then
-    if [[ "$lang" == "zh" ]]; then
-      printf '缺少依赖包：%s\n是否安装？[y/N] ' "$missing_list"
-    else
-      printf 'Missing dependencies: %s\nInstall? [y/N] ' "$missing_list"
-    fi
-    local reply
-    read -r reply
-    [[ "$reply" =~ ^[yY]$ ]] || return 0
-  else
-    gui_yes_no "$title" "$msg" || return 0
-  fi
-
-  enable_multilib_and_sync
-
-  if [[ "$lang" == "zh" ]]; then
-    printf '正在安装依赖包...\n'
-  else
-    printf 'Installing dependencies...\n'
-  fi
-
-  pkexec pacman -S --needed --noconfirm $missing_list || {
-    if [[ "$lang" == "zh" ]]; then
-      printf 'shorin-proton-wrapper: 依赖安装失败，请手动安装：\n  sudo pacman -S %s\n' "$missing_list" >&2
-    else
-      printf 'shorin-proton-wrapper: dependency installation failed, please install manually:\n  sudo pacman -S %s\n' "$missing_list" >&2
-    fi
-  }
-}
-
-doctor() {
-  local lang
-  lang="$(ui_lang)"
-  local has_multilib has_libpulse
-  local missing=()
-  local all_ok=1
-
-  if [[ "$lang" == "zh" ]]; then
-    printf 'shorin-proton-wrapper 环境检查\n'
-    printf '==============================\n\n'
-  else
-    printf 'shorin-proton-wrapper environment check\n'
-    printf '=======================================\n\n'
-  fi
-
-  if is_multilib_enabled; then
-    has_multilib=1
-    printf '  [multilib]              %s\n' "$(ok_str)"
-  else
-    has_multilib=0
-    all_ok=0
-    printf '  [multilib]              %s\n' "$(fail_str)"
-  fi
-
-  has_libpulse=0
-  if has_libpulse_64; then
-    has_libpulse=1
-    printf '  libpulse (64-bit)       %s\n' "$(ok_str)"
-  else
-    printf '  libpulse (64-bit)       %s\n' "$(skip_str)"
-  fi
-  printf '\n'
-
-  if [[ "$lang" == "zh" ]]; then
-    printf '32 位依赖：\n'
-  else
-    printf '32-bit dependencies:\n'
-  fi
-
-  local pkg
-  for pkg in "${DEPENDENCIES_CORE_32[@]}"; do
-    if is_package_installed "$pkg"; then
-      printf '  %-28s %s\n' "$pkg" "$(ok_str)"
-    else
-      all_ok=0
-      missing+=("$pkg")
-      printf '  %-28s %s\n' "$pkg" "$(fail_str)"
-    fi
-  done
-
-  if [[ "$has_libpulse" -eq 1 ]]; then
-    if is_package_installed lib32-libpulse; then
-      printf '  %-28s %s\n' "lib32-libpulse" "$(ok_str)"
-    else
-      all_ok=0
-      missing+=(lib32-libpulse)
-      printf '  %-28s %s\n' "lib32-libpulse" "$(fail_str)"
-    fi
-  else
-    if is_package_installed lib32-alsa-plugins; then
-      printf '  %-28s %s\n' "lib32-alsa-plugins" "$(ok_str)"
-    else
-      all_ok=0
-      missing+=(lib32-alsa-plugins)
-      printf '  %-28s %s\n' "lib32-alsa-plugins" "$(fail_str)"
-    fi
-  fi
-
-  printf '\n'
-  if [[ "$lang" == "zh" ]]; then
-    printf '64 位依赖：\n'
-  else
-    printf '64-bit dependencies:\n'
-  fi
-
-  for pkg in "${DEPENDENCIES_CORE_64[@]}"; do
-    if is_package_installed "$pkg"; then
-      printf '  %-28s %s\n' "$pkg" "$(ok_str)"
-    else
-      all_ok=0
-      missing+=("$pkg")
-      printf '  %-28s %s\n' "$pkg" "$(fail_str)"
-    fi
-  done
-
-  printf '\n'
-  if [[ "$lang" == "zh" ]]; then
-    printf '字体：\n'
-  else
-    printf 'Fonts:\n'
-  fi
-
-  for pkg in "${DEPENDENCY_FONTS[@]}"; do
-    if is_package_installed "$pkg"; then
-      printf '  %-28s %s\n' "$pkg" "$(ok_str)"
-    else
-      all_ok=0
-      missing+=("$pkg")
-      printf '  %-28s %s\n' "$pkg" "$(fail_str)"
-    fi
-  done
-
-  printf '\n'
-
-  if [[ "$all_ok" -eq 1 ]]; then
-    if [[ "$lang" == "zh" ]]; then
-      printf '所有依赖已安装。环境就绪。\n'
-    else
-      printf 'All dependencies installed. Environment ready.\n'
-    fi
-    return 0
-  fi
-
-  if [[ "$has_multilib" -eq 0 ]]; then
-    if [[ "$lang" == "zh" ]]; then
-      printf '注意：[multilib] 仓库未启用，请先启用：\n'
-      printf '  sudo sed -i '\''/\\[multilib\\]/,/Include/'\'''\''s/^#//'\'' /etc/pacman.conf\n'
-      printf '  sudo pacman -Sy\n\n'
-    else
-      printf 'Note: [multilib] repository is not enabled. Enable it first:\n'
-      printf '  sudo sed -i '\''/\\[multilib\\]/,/Include/'\'''\''s/^#//'\'' /etc/pacman.conf\n'
-      printf '  sudo pacman -Sy\n\n'
-    fi
-  fi
-
-  local missing_str
-  missing_str="$(printf '%s ' "${missing[@]}" | sed 's/ $//')"
-
-  if [[ "$lang" == "zh" ]]; then
-    printf '安装缺失的依赖：\n'
-  else
-    printf 'Install missing dependencies:\n'
-  fi
-  printf '  sudo pacman -S --needed %s\n' "$missing_str"
-}
-
-ok_str() {
-  if [[ "$(ui_lang)" == "zh" ]]; then
-    printf '\033[32m✓ 已安装\033[0m'
-  else
-    printf '\033[32m✓ installed\033[0m'
-  fi
-}
-
-fail_str() {
-  if [[ "$(ui_lang)" == "zh" ]]; then
-    printf '\033[31m✗ 未安装\033[0m'
-  else
-    printf '\033[31m✗ missing\033[0m'
-  fi
-}
-
-skip_str() {
-  if [[ "$(ui_lang)" == "zh" ]]; then
-    printf '\033[33m- 跳过（纯 ALSA）\033[0m'
-  else
-    printf '\033[33m- skipped (pure ALSA)\033[0m'
+    notify-send -i shorin-proton -t 0 \
+      "shorin-proton-wrapper" \
+      "Initializing runtime environment. First run requires downloading a runner, please wait..." 2>/dev/null &
   fi
 }
 
 init_prefix() {
-  ensure_dependencies
   select_init_runner
   if [[ "$RESOLVED_RUNNER_TYPE" == "proton" ]]; then
     run_proton_command "$RESOLVED_RUNNER_PATH" run wineboot -u
@@ -1742,6 +1404,7 @@ init_prefix() {
 
 ensure_initialized() {
   if [[ ! -d "$PREFIX/pfx" ]]; then
+    notify_init
     init_prefix
   fi
 }
@@ -2141,10 +1804,6 @@ parse_args() {
         ACTION="status"
         shift
         ;;
-      --doctor)
-        ACTION="doctor"
-        shift
-        ;;
       --init)
         ACTION="init"
         shift
@@ -2248,9 +1907,6 @@ case "$ACTION" in
     ;;
   status)
     show_status
-    ;;
-  doctor)
-    doctor
     ;;
   init)
     init_prefix

@@ -13,7 +13,7 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
-from gi.repository import Gdk, Gio, Gtk
+from gi.repository import Gdk, Gio, GLib, Gtk
 
 
 def is_zh() -> bool:
@@ -67,6 +67,10 @@ TEXT = {
     "invalid_resolution": "分辨率格式应为 宽x高，例如 1920x1080。" if ZH else "Resolution must be WIDTHxHEIGHT, e.g. 1920x1080.",
     "invalid_fps": "帧率必须是数字。" if ZH else "FPS must be a number.",
     "no_runner": "没有找到 Proton 或 Wine 运行器。" if ZH else "No Proton or Wine runner found.",
+    "download_runner_title": "下载运行器" if ZH else "Download Runner",
+    "download_runner_question": "未找到运行器，是否下载 DW-Proton？\n首次下载约 500MB。" if ZH else "No runner found. Download DW-Proton?\nFirst download is ~500MB.",
+    "downloading_runner": "正在下载运行器，请稍候..." if ZH else "Downloading runner, please wait...",
+    "download_failed": "运行器下载失败" if ZH else "Runner download failed",
     "select_prefix": "请选择前置环境目录。" if ZH else "Select a prefix directory.",
     "select_runner": "请选择运行器。" if ZH else "Select a runner.",
     "no_exe_error": "shorin-proton-wrapper-configure: 未提供可执行文件" if ZH else "shorin-proton-wrapper-configure: no executable provided",
@@ -458,6 +462,78 @@ class SelectorApp(Gtk.Application):
         dialog.connect("response", lambda d, _r: d.close())
         dialog.present()
 
+    def offer_download_runner(self):
+        dialog = Gtk.MessageDialog(
+            transient_for=self.window,
+            modal=True,
+            message_type=Gtk.MessageType.QUESTION,
+            buttons=Gtk.ButtonsType.YES_NO,
+            text=TEXT["download_runner_title"],
+            secondary_text=TEXT["download_runner_question"],
+        )
+
+        def on_response(_d, response):
+            dialog.close()
+            if response == Gtk.ResponseType.YES:
+                self.download_runner_async()
+
+        dialog.connect("response", on_response)
+        dialog.present()
+
+    def download_runner_async(self):
+        spinner_window = Gtk.ApplicationWindow(application=self, title=TEXT["download_runner_title"])
+        spinner_window.set_default_size(360, 120)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        box.set_margin_top(20)
+        box.set_margin_bottom(20)
+        box.set_margin_start(20)
+        box.set_margin_end(20)
+        box.set_halign(Gtk.Align.CENTER)
+        box.set_valign(Gtk.Align.CENTER)
+        spinner = Gtk.Spinner()
+        spinner.start()
+        label = Gtk.Label(label=TEXT["downloading_runner"])
+        box.append(spinner)
+        box.append(label)
+        spinner_window.set_child(box)
+        spinner_window.present()
+
+        def run_download():
+            try:
+                result = subprocess.run(
+                    [self.wrapper, "--install", "dw"],
+                    check=False, text=True, capture_output=True,
+                )
+                return result.returncode == 0
+            except OSError:
+                return False
+
+        def on_download_done(result, error):
+            if error or not result:
+                spinner_window.close()
+                self.show_error(TEXT["download_failed"])
+                return
+            self.runners = load_runners(self.wrapper)
+            spinner_window.close()
+            if not self.runners:
+                self.show_error(TEXT["no_runner"])
+                return
+            self.runner_combo.remove_all()
+            for index, runner in enumerate(self.runners):
+                self.runner_combo.append(str(index), runner_label(runner))
+            self.runner_combo.set_active_id("0")
+            self.selected_runner = self.runners[0]["path"]
+            self.update_runner_detail()
+
+        import threading
+
+        def thread_wrapper():
+            success = run_download()
+            GLib.idle_add(lambda: on_download_done(success, None))
+
+        thread = threading.Thread(target=thread_wrapper, daemon=True)
+        thread.start()
+
     def run_with(self, prefix: str, runner: str, options: dict | None = None):
         options = options or {}
         command = [self.wrapper, "-p", prefix, "--runner", runner]
@@ -722,7 +798,7 @@ class SelectorApp(Gtk.Application):
         self.window.set_child(outer)
         self.window.present()
         if not self.runners:
-            self.show_error(TEXT["no_runner"])
+            self.offer_download_runner()
 
     def on_runner_changed(self, combo):
         active_id = combo.get_active_id()

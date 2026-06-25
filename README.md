@@ -4,12 +4,6 @@
 
 >注意，这只是个包装器，原本 Proton 运行不了的软件依旧会运行不了。
 
-## 系统要求
-
-- Arch Linux 且启用 `[multilib]` 仓库（32 位依赖必须）
-- GPU 驱动及 Vulkan 支持（由系统安装时配置，如 `chwd -a`）
-- 首次运行 exe 时会自动检测缺失依赖并提示安装，也可手动运行 `shorin-proton-wrapper --doctor` 检查
-
 ![](./pics/1.png)
 
 灵感来自 Wine 的配置过程。安装 Wine 后运行 `winecfg` 会在 `~/.wine` 目录初始化前置运行环境。我借鉴并改良了这个设计，运行 exe 的默认行为是检测 `~/.proton` 是否存在，如果不存在则静默初始化。考虑到国内二游盛行，我选择了 `DW-Proton` 作为默认运行器。
@@ -54,7 +48,6 @@ shorin-proton-wrapper
   --init                  初始化，默认路径 ~/.proton
   -p, --prefix 目录       指定前置环境路径，若不存在则初始化
   --status                显示前置环境信息
-  --doctor                检查系统依赖并报告缺失的包
   --list-runner           列出已安装的运行器
   --runner 路径|ge|dw     指定运行器
   --install ge|dw         安装运行器，默认安装至 ~/.local/share/proton/runners
