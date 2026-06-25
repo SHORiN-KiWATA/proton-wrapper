@@ -13,7 +13,7 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
-from gi.repository import Gdk, Gio, GLib, Gtk, Pango
+from gi.repository import Gdk, Gio, Gtk
 
 
 def is_zh() -> bool:
@@ -67,10 +67,6 @@ TEXT = {
     "invalid_resolution": "分辨率格式应为 宽x高，例如 1920x1080。" if ZH else "Resolution must be WIDTHxHEIGHT, e.g. 1920x1080.",
     "invalid_fps": "帧率必须是数字。" if ZH else "FPS must be a number.",
     "no_runner": "没有找到 Proton 或 Wine 运行器。" if ZH else "No Proton or Wine runner found.",
-    "download_runner_title": "下载运行器" if ZH else "Download Runner",
-    "download_runner_question": "未找到运行器，是否下载 DW-Proton？\n首次下载约 500MB。" if ZH else "No runner found. Download DW-Proton?\nFirst download is ~500MB.",
-    "downloading_runner": "正在下载运行器，请稍候..." if ZH else "Downloading runner, please wait...",
-    "download_failed": "运行器下载失败" if ZH else "Runner download failed",
     "select_prefix": "请选择前置环境目录。" if ZH else "Select a prefix directory.",
     "select_runner": "请选择运行器。" if ZH else "Select a runner.",
     "no_exe_error": "shorin-proton-wrapper-configure: 未提供可执行文件" if ZH else "shorin-proton-wrapper-configure: no executable provided",
@@ -481,74 +477,41 @@ class SelectorApp(Gtk.Application):
         dialog.present()
 
     def download_runner_async(self):
-        progress_window = Gtk.ApplicationWindow(application=self, title=TEXT["download_runner_title"])
-        progress_window.set_default_size(420, 160)
-        progress_window.set_resizable(False)
+        spinner_window = Gtk.ApplicationWindow(application=self, title=TEXT["download_runner_title"])
+        spinner_window.set_default_size(360, 120)
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         box.set_margin_top(20)
         box.set_margin_bottom(20)
         box.set_margin_start(20)
         box.set_margin_end(20)
+        box.set_halign(Gtk.Align.CENTER)
+        box.set_valign(Gtk.Align.CENTER)
+        spinner = Gtk.Spinner()
+        spinner.start()
         label = Gtk.Label(label=TEXT["downloading_runner"])
-        label.set_halign(Gtk.Align.START)
-        progress_bar = Gtk.ProgressBar()
-        progress_bar.set_show_text(True)
-        progress_bar.set_fraction(0.0)
-        progress_bar.set_text("0%")
-        status_label = Gtk.Label(label="")
-        status_label.add_css_class("dim-label")
-        status_label.set_halign(Gtk.Align.START)
-        status_label.set_max_width_chars(52)
-        status_label.set_ellipsize(Pango.EllipsizeMode.END)
+        box.append(spinner)
         box.append(label)
-        box.append(progress_bar)
-        box.append(status_label)
-        progress_window.set_child(box)
-        progress_window.present()
-
-        import threading
-
-        stop_progress = threading.Event()
-        progress = [0.0]
-
-        def fake_progress_loop():
-            while not stop_progress.is_set():
-                if progress[0] < 0.95:
-                    remaining = 0.95 - progress[0]
-                    progress[0] = min(progress[0] + max(remaining * 0.025, 0.003), 0.95)
-                    GLib.idle_add(lambda value=progress[0]: progress_bar.set_fraction(value))
-                    GLib.idle_add(lambda value=progress[0]: progress_bar.set_text(f"{int(value * 100)}%"))
-                stop_progress.wait(0.2)
+        spinner_window.set_child(box)
+        spinner_window.present()
 
         def run_download():
             try:
-                proc = subprocess.Popen(
+                result = subprocess.run(
                     [self.wrapper, "--install", "dw"],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
+                    check=False,
                     text=True,
-                    bufsize=1,
+                    capture_output=True,
                 )
-                for line in proc.stdout:
-                    stripped = line.strip()
-                    if stripped:
-                        GLib.idle_add(lambda t=stripped: status_label.set_text(t))
-                proc.wait()
-                return proc.returncode == 0
+                return result.returncode == 0
             except OSError:
                 return False
 
-        def on_download_done(success):
-            stop_progress.set()
-            if not success:
-                progress_window.close()
+        def on_download_done(result, error):
+            spinner_window.close()
+            if error or not result:
                 self.show_error(TEXT["download_failed"])
                 return
-            progress_bar.set_fraction(1.0)
-            progress_bar.set_text("100%")
-            status_label.set_text("")
             self.runners = load_runners(self.wrapper)
-            progress_window.close()
             if not self.runners:
                 self.show_error(TEXT["no_runner"])
                 return
@@ -559,12 +522,11 @@ class SelectorApp(Gtk.Application):
             self.selected_runner = self.runners[0]["path"]
             self.update_runner_detail()
 
+        import threading
+
         def thread_wrapper():
-            progress_thread = threading.Thread(target=fake_progress_loop, daemon=True)
-            progress_thread.start()
             success = run_download()
-            stop_progress.set()
-            GLib.idle_add(lambda: on_download_done(success))
+            GLib.idle_add(lambda: on_download_done(success, None))
 
         thread = threading.Thread(target=thread_wrapper, daemon=True)
         thread.start()

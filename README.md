@@ -45,7 +45,6 @@ shorin-proton-wrapper
   shorin-proton-wrapper [选项] app.exe [参数...]
 
 选项:
-  --doctor                检查运行 Proton 所需的系统依赖
   --init                  初始化，默认路径 ~/.proton
   -p, --prefix 目录       指定前置环境路径，若不存在则初始化
   --status                显示前置环境信息
@@ -79,21 +78,9 @@ shorin-proton-wrapper
   shorin-proton-wrapper --list-version dw
   shorin-proton-wrapper --update
 ```
-
-## 依赖说明
-
-Proton 运行 Windows 程序需要 **32 位渲染栈**。如果双击 exe 打不开，请运行：
-```
-shorin-proton-wrapper --doctor
-```
-检查缺失的依赖。通常只需一个包：
-```
-sudo pacman -S --needed lib32-cairo
-```
-> 需要启用 `[multilib]` 仓库。参见 [Arch Wiki](https://wiki.archlinux.org/title/Official_repositories#multilib)。
-
 ```
 shorin-proton-wrapper --gamescope 
+
 用法:
   shorin-proton-wrapper --gamescope [Gamescope 选项] app.exe [参数...]
 
