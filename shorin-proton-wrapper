@@ -62,6 +62,38 @@ ui_lang() {
   esac
 }
 
+is_multilib_enabled() {
+  grep -q '^\[multilib\]' /etc/pacman.conf 2>/dev/null
+}
+
+is_package_installed() {
+  pacman -Qi "$1" &>/dev/null
+}
+
+ok_str() {
+  if [[ "$(ui_lang)" == "zh" ]]; then
+    printf '\033[32m✓ 已安装\033[0m'
+  else
+    printf '\033[32m✓ installed\033[0m'
+  fi
+}
+
+fail_str() {
+  if [[ "$(ui_lang)" == "zh" ]]; then
+    printf '\033[31m✗ 未安装\033[0m'
+  else
+    printf '\033[31m✗ missing\033[0m'
+  fi
+}
+
+skip_str() {
+  if [[ "$(ui_lang)" == "zh" ]]; then
+    printf '\033[33m- 跳过\033[0m'
+  else
+    printf '\033[33m- skipped\033[0m'
+  fi
+}
+
 setup_debug_logging() {
   local log_dir name timestamp
   [[ $DEBUG -eq 1 ]] || return 0
@@ -139,6 +171,7 @@ Usage:
 Options:
   --init                  initialize prefix, default ~/.proton
   -p, --prefix DIR        prefix directory, initialize if needed
+  --doctor                check system dependencies for running Proton
   --status                show prefix information
   --list-runner           list installed runners
   --runner PATH|ge|dw     use specified runner
@@ -180,6 +213,7 @@ usage_zh() {
 选项:
   --init                  初始化，默认路径 ~/.proton
   -p, --prefix 目录       指定前置环境路径，若不存在则初始化
+  --doctor                检查运行 Proton 所需的系统依赖
   --status                显示前置环境信息
   --list-runner           列出已安装的运行器
   --runner 路径|ge|dw     指定运行器
@@ -1386,26 +1420,48 @@ notify_init() {
     notify-send -i shorin-proton -t 0 \
       "shorin-proton-wrapper" \
       "正在初始化运行环境，首次使用需要下载运行器，请耐心等待..." 2>/dev/null &
+    printf '%s' $! > /tmp/.shorin-proton-wrapper-notify.pid
   else
     notify-send -i shorin-proton -t 0 \
       "shorin-proton-wrapper" \
       "Initializing runtime environment. First run requires downloading a runner, please wait..." 2>/dev/null &
+    printf '%s' $! > /tmp/.shorin-proton-wrapper-notify.pid
+  fi
+}
+
+notify_init_done() {
+  command -v notify-send >/dev/null 2>&1 || return 0
+  local pidfile="/tmp/.shorin-proton-wrapper-notify.pid"
+  [[ -f "$pidfile" ]] && kill "$(cat "$pidfile")" 2>/dev/null; rm -f "$pidfile"
+  local lang
+  lang="$(ui_lang)"
+  if [[ "$lang" == "zh" ]]; then
+    notify-send -i shorin-proton -t 5000 \
+      "shorin-proton-wrapper" \
+      "初始化完成，正在启动程序..." 2>/dev/null &
+  else
+    notify-send -i shorin-proton -t 5000 \
+      "shorin-proton-wrapper" \
+      "Initialization complete, launching program..." 2>/dev/null &
   fi
 }
 
 init_prefix() {
   select_init_runner
+  set +e
   if [[ "$RESOLVED_RUNNER_TYPE" == "proton" ]]; then
     run_proton_command "$RESOLVED_RUNNER_PATH" run wineboot -u
   else
     run_wine_command "$RESOLVED_RUNNER_PATH" wineboot -u
   fi
+  set -e
 }
 
 ensure_initialized() {
   if [[ ! -d "$PREFIX/pfx" ]]; then
     notify_init
     init_prefix
+    notify_init_done
   fi
 }
 
@@ -1679,6 +1735,74 @@ show_status() {
   fi
 }
 
+doctor() {
+  local lang has_multilib has_lib32_cairo all_ok
+  lang="$(ui_lang)"
+  has_multilib=0
+  has_lib32_cairo=0
+  all_ok=1
+
+  if [[ "$lang" == "zh" ]]; then
+    printf 'shorin-proton-wrapper 环境检查\n'
+    printf '==============================\n\n'
+  else
+    printf 'shorin-proton-wrapper environment check\n'
+    printf '=======================================\n\n'
+  fi
+
+  if is_multilib_enabled; then
+    has_multilib=1
+    printf '  [multilib]              %s\n' "$(ok_str)"
+  else
+    all_ok=0
+    printf '  [multilib]              %s\n' "$(fail_str)"
+  fi
+
+  if [[ $has_multilib -eq 1 ]]; then
+    if is_package_installed lib32-cairo; then
+      has_lib32_cairo=1
+      printf '  lib32-cairo             %s\n' "$(ok_str)"
+    else
+      all_ok=0
+      printf '  lib32-cairo             %s\n' "$(fail_str)"
+    fi
+  else
+    printf '  lib32-cairo             %s\n' "$(skip_str)"
+  fi
+
+  printf '\n'
+
+  if [[ $all_ok -eq 1 ]]; then
+    if [[ "$lang" == "zh" ]]; then
+      printf '所有依赖已安装。环境就绪。\n'
+    else
+      printf 'All dependencies installed. Environment ready.\n'
+    fi
+    return 0
+  fi
+
+  if [[ $has_multilib -eq 0 ]]; then
+    if [[ "$lang" == "zh" ]]; then
+      printf '注意：[multilib] 仓库未启用，请先启用：\n'
+      printf '  sudo sed -i '\''/\\[multilib\\]/,/Include/'\''s/^#//'\'' /etc/pacman.conf\n'
+      printf '  sudo pacman -Syu\n\n'
+    else
+      printf 'Note: [multilib] repository is not enabled. Enable it first:\n'
+      printf '  sudo sed -i '\''/\\[multilib\\]/,/Include/'\''s/^#//'\'' /etc/pacman.conf\n'
+      printf '  sudo pacman -Syu\n\n'
+    fi
+  fi
+
+  if [[ $has_multilib -eq 1 && $has_lib32_cairo -eq 0 ]]; then
+    if [[ "$lang" == "zh" ]]; then
+      printf '安装缺失的依赖：\n'
+    else
+      printf 'Install missing dependencies:\n'
+    fi
+    printf '  sudo pacman -S --needed lib32-cairo\n'
+  fi
+}
+
 parse_args() {
   if [[ $# -eq 0 ]]; then
     usage
@@ -1800,6 +1924,10 @@ parse_args() {
         PRODUCT="$2"
         shift 2
         ;;
+      --doctor)
+        ACTION="doctor"
+        shift
+        ;;
       --status)
         ACTION="status"
         shift
@@ -1904,6 +2032,9 @@ case "$ACTION" in
     ;;
   list-version)
     list_versions "$PRODUCT"
+    ;;
+  doctor)
+    doctor
     ;;
   status)
     show_status

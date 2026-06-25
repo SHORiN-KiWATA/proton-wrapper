@@ -13,7 +13,7 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
-from gi.repository import Gdk, Gio, GLib, Gtk
+from gi.repository import Gdk, Gio, GLib, Gtk, Pango
 
 
 def is_zh() -> bool:
@@ -481,40 +481,65 @@ class SelectorApp(Gtk.Application):
         dialog.present()
 
     def download_runner_async(self):
-        spinner_window = Gtk.ApplicationWindow(application=self, title=TEXT["download_runner_title"])
-        spinner_window.set_default_size(360, 120)
+        progress_window = Gtk.ApplicationWindow(application=self, title=TEXT["download_runner_title"])
+        progress_window.set_default_size(420, 160)
+        progress_window.set_resizable(False)
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         box.set_margin_top(20)
         box.set_margin_bottom(20)
         box.set_margin_start(20)
         box.set_margin_end(20)
-        box.set_halign(Gtk.Align.CENTER)
-        box.set_valign(Gtk.Align.CENTER)
-        spinner = Gtk.Spinner()
-        spinner.start()
         label = Gtk.Label(label=TEXT["downloading_runner"])
-        box.append(spinner)
+        label.set_halign(Gtk.Align.START)
+        progress_bar = Gtk.ProgressBar()
+        progress_bar.set_show_text(True)
+        status_label = Gtk.Label(label="")
+        status_label.add_css_class("dim-label")
+        status_label.set_halign(Gtk.Align.START)
+        status_label.set_max_width_chars(52)
+        status_label.set_ellipsize(Pango.EllipsizeMode.END)
         box.append(label)
-        spinner_window.set_child(box)
-        spinner_window.present()
+        box.append(progress_bar)
+        box.append(status_label)
+        progress_window.set_child(box)
+        progress_window.present()
+
+        import threading
+
+        stop_pulse = threading.Event()
+
+        def pulse_loop():
+            while not stop_pulse.is_set():
+                GLib.idle_add(lambda: progress_bar.pulse())
+                stop_pulse.wait(0.08)
 
         def run_download():
             try:
-                result = subprocess.run(
+                proc = subprocess.Popen(
                     [self.wrapper, "--install", "dw"],
-                    check=False, text=True, capture_output=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
                 )
-                return result.returncode == 0
+                last_line = ""
+                for line in proc.stdout:
+                    stripped = line.strip()
+                    if stripped:
+                        last_line = stripped
+                        GLib.idle_add(lambda t=stripped: status_label.set_text(t))
+                proc.wait()
+                return proc.returncode == 0
             except OSError:
                 return False
 
-        def on_download_done(result, error):
-            if error or not result:
-                spinner_window.close()
+        def on_download_done(success):
+            stop_pulse.set()
+            progress_window.close()
+            if not success:
                 self.show_error(TEXT["download_failed"])
                 return
             self.runners = load_runners(self.wrapper)
-            spinner_window.close()
             if not self.runners:
                 self.show_error(TEXT["no_runner"])
                 return
@@ -525,11 +550,12 @@ class SelectorApp(Gtk.Application):
             self.selected_runner = self.runners[0]["path"]
             self.update_runner_detail()
 
-        import threading
-
         def thread_wrapper():
+            pulse_thread = threading.Thread(target=pulse_loop, daemon=True)
+            pulse_thread.start()
             success = run_download()
-            GLib.idle_add(lambda: on_download_done(success, None))
+            stop_pulse.set()
+            GLib.idle_add(lambda: on_download_done(success))
 
         thread = threading.Thread(target=thread_wrapper, daemon=True)
         thread.start()
