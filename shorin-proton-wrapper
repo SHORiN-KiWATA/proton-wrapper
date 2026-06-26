@@ -988,21 +988,21 @@ download_message() {
   local key="$1" product="$2"
   if [[ "$(ui_lang)" == "zh" ]]; then
     case "$key" in
-      start) printf '正在下载并安装 %s...\n' "$product" ;;
-      progress) printf '仍在下载并安装 %s...\n' "$product" ;;
+      start) printf '正在下载 %s...\n' "$product" ;;
+      progress) printf '仍在下载 %s...\n' "$product" ;;
       downloaded) printf '%s 下载完成，正在安装...\n' "$product" ;;
       done) printf '%s 已安装完成。\n' "$product" ;;
       failed) printf '%s 下载或安装失败。\n' "$product" ;;
-      timeout) printf '%s 下载超过 10 分钟，已终止。\n' "$product" ;;
+      timeout) printf '%s 下载超时，已终止。\n' "$product" ;;
     esac
   else
     case "$key" in
-      start) printf 'Downloading and installing %s...\n' "$product" ;;
-      progress) printf 'Still downloading and installing %s...\n' "$product" ;;
+      start) printf 'Downloading %s...\n' "$product" ;;
+      progress) printf 'Still downloading %s...\n' "$product" ;;
       downloaded) printf '%s download completed. Installing...\n' "$product" ;;
       done) printf '%s has been installed.\n' "$product" ;;
       failed) printf 'Failed to download or install %s.\n' "$product" ;;
-      timeout) printf '%s download exceeded 10 minutes and was stopped.\n' "$product" ;;
+      timeout) printf '%s download timed out and was stopped.\n' "$product" ;;
     esac
   fi
 }
