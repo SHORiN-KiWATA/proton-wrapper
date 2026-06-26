@@ -1032,14 +1032,13 @@ run_download_command_with_notifications() {
   set -e
   kill "$notifier_pid" >/dev/null 2>&1 || true
   wait "$notifier_pid" >/dev/null 2>&1 || true
-  if [[ $status -eq 0 ]]; then
-    message="$(download_message downloaded "$product")"
-  elif [[ $status -eq 124 ]]; then
+  if [[ $status -eq 124 ]]; then
     message="$(download_message timeout "$product")"
-  else
+    notify_download "$title" "$message"
+  elif [[ $status -ne 0 ]]; then
     message="$(download_message failed "$product")"
+    notify_download "$title" "$message"
   fi
-  notify_download "$title" "$message"
   return "$status"
 }
 
@@ -1183,6 +1182,10 @@ install_runner() {
       cleanup_install_failure
       exit 1
     fi
+    local _product_name _title
+    _product_name="$(runner_dir_name "$product")"
+    _title="Shorin Proton Wrapper"
+    notify_download "$_title" "$(download_message downloaded "$_product_name")"
   fi
 
   if ! verify_archive "$work_dir" "$checksum_name"; then
