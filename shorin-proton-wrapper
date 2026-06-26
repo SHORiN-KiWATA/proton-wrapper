@@ -979,7 +979,7 @@ notify_download() {
     --app-name="Shorin Proton Wrapper" \
     --app-icon=shorin-proton \
     --icon=shorin-proton \
-    --hint=string:desktop-entry:shorin-proton-wrapper-manager \
+    --urgency=normal \
     --expire-time="$DOWNLOAD_NOTIFY_EXPIRE" \
     "$title" "$message" >/dev/null 2>&1 || true
 }
