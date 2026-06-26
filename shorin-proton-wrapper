@@ -975,7 +975,13 @@ notify_available() {
 notify_download() {
   local title="$1" message="$2"
   notify_available || return 0
-  notify-send -i shorin-proton -t "$DOWNLOAD_NOTIFY_EXPIRE" "$title" "$message" >/dev/null 2>&1 || true
+  notify-send \
+    --app-name="Shorin Proton Wrapper" \
+    --app-icon=shorin-proton \
+    --icon=shorin-proton \
+    --hint=string:desktop-entry:shorin-proton-wrapper-manager \
+    --expire-time="$DOWNLOAD_NOTIFY_EXPIRE" \
+    "$title" "$message" >/dev/null 2>&1 || true
 }
 
 download_message() {
