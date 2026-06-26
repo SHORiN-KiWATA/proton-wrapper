@@ -6,7 +6,16 @@ DEFAULT_PREFIX="${PROTON_PREFIX:-$HOME/.proton}"
 XDG_DATA_HOME_VALUE="${XDG_DATA_HOME:-$HOME/.local/share}"
 XDG_CACHE_HOME_VALUE="${XDG_CACHE_HOME:-$HOME/.cache}"
 LOCAL_RUNNER_DIR="$XDG_DATA_HOME_VALUE/proton/runners"
+WRAPPER_CACHE_DIR="$XDG_CACHE_HOME_VALUE/shorin-proton-wrapper"
+INSTALL_DOWNLOAD_DIR="$WRAPPER_CACHE_DIR/downloads"
+DOWNLOAD_TIMEOUT_SECONDS="${SHORIN_PROTON_WRAPPER_DOWNLOAD_TIMEOUT:-600}"
+DOWNLOAD_NOTIFY_INTERVAL="${SHORIN_PROTON_WRAPPER_NOTIFY_INTERVAL:-30}"
+DOWNLOAD_NOTIFY_EXPIRE="${SHORIN_PROTON_WRAPPER_NOTIFY_EXPIRE:-8000}"
 STEAM_ROOT="${STEAM_COMPAT_CLIENT_INSTALL_PATH:-$HOME/.steam/root}"
+
+[[ "$DOWNLOAD_TIMEOUT_SECONDS" =~ ^[0-9]+$ && "$DOWNLOAD_TIMEOUT_SECONDS" -gt 0 ]] || DOWNLOAD_TIMEOUT_SECONDS=600
+[[ "$DOWNLOAD_NOTIFY_INTERVAL" =~ ^[0-9]+$ && "$DOWNLOAD_NOTIFY_INTERVAL" -gt 0 ]] || DOWNLOAD_NOTIFY_INTERVAL=30
+[[ "$DOWNLOAD_NOTIFY_EXPIRE" =~ ^[0-9]+$ && "$DOWNLOAD_NOTIFY_EXPIRE" -gt 0 ]] || DOWNLOAD_NOTIFY_EXPIRE=8000
 
 ACTION=""
 PRODUCT=""
@@ -149,6 +158,7 @@ Options:
   --list-version ge|dw    list available runner versions
   --version VERSION       use specific release tag, default latest
   --update                update all installed Latest runners
+  --doctor                check wrapper environment and print diagnostics
   --remove ge|dw          remove runner from ~/.local/share/proton/runners
   --remove-steam ge|dw    remove runner from Steam, omit ge|dw to remove all wrapper-installed runners
   --remove-lutris ge|dw   remove runner from Lutris, omit ge|dw to remove all wrapper-installed runners
@@ -168,6 +178,7 @@ Examples:
   shorin-proton-wrapper --gamescope --res 1920x1080 --fps 30 --fsr /path/to/app.exe
   shorin-proton-wrapper --debug /path/to/app.exe
   shorin-proton-wrapper --list-version dw
+  shorin-proton-wrapper --doctor
   shorin-proton-wrapper --update
 EOF
 }
@@ -190,6 +201,7 @@ usage_zh() {
   --list-version ge|dw    列出可使用的运行器版本
   --version 版本          指定特定版本，默认 latest
   --update                升级所有已安装的 Latest 运行器
+  --doctor                检查 wrapper 运行环境并输出诊断信息
   --remove ge|dw          移除默认位置中已安装的运行器
   --remove-steam ge|dw    移除 Steam 中指定运行器，省略 ge|dw 则移除全部由 wrapper 安装的运行器
   --remove-lutris ge|dw   移除 Lutris 中指定运行器，省略 ge|dw 则移除全部由 wrapper 安装的运行器
@@ -209,6 +221,7 @@ usage_zh() {
   shorin-proton-wrapper --gamescope --res 1920x1080 --fps 30 --fsr /path/to/app.exe
   shorin-proton-wrapper --debug /path/to/app.exe
   shorin-proton-wrapper --list-version dw
+  shorin-proton-wrapper --doctor
   shorin-proton-wrapper --update
 EOF
 }
@@ -245,6 +258,9 @@ Install runner:
 
 Update runners:
   shorin-proton-wrapper --update
+
+Diagnostics:
+  shorin-proton-wrapper --doctor
 
 Remove runner:
   shorin-proton-wrapper --remove ge|dw
@@ -295,6 +311,9 @@ usage_full_zh() {
 
 更新运行器:
   shorin-proton-wrapper --update
+
+诊断:
+  shorin-proton-wrapper --doctor
 
 移除运行器:
   shorin-proton-wrapper --remove ge|dw
@@ -909,7 +928,7 @@ PY
 }
 
 fetch_file() {
-  local url="$1" dest="$2" tmp
+  local url="$1" dest="$2" tmp timeout_prefix
   if [[ -s "$dest" ]]; then
     printf 'Using existing: %s\n' "$dest"
     return 0
@@ -917,14 +936,18 @@ fetch_file() {
 
   tmp="$dest.part"
   rm -f "$tmp"
+  timeout_prefix=()
+  if command -v timeout >/dev/null 2>&1; then
+    timeout_prefix=(timeout "${DOWNLOAD_TIMEOUT_SECONDS}s")
+  fi
   if command -v curl >/dev/null 2>&1; then
-    if ! curl -L --fail --progress-bar -o "$tmp" "$url"; then
+    if ! "${timeout_prefix[@]}" curl -L --fail --progress-bar --connect-timeout 30 --max-time "$DOWNLOAD_TIMEOUT_SECONDS" -o "$tmp" "$url"; then
       rm -f "$tmp"
       printf 'shorin-proton-wrapper: download failed: %s -> %s\n' "$url" "$dest" >&2
       return 1
     fi
   elif command -v wget >/dev/null 2>&1; then
-    if ! wget -O "$tmp" "$url"; then
+    if ! "${timeout_prefix[@]}" wget --timeout=30 --tries=3 -O "$tmp" "$url"; then
       rm -f "$tmp"
       printf 'shorin-proton-wrapper: download failed: %s -> %s\n' "$url" "$dest" >&2
       return 1
@@ -933,6 +956,88 @@ fetch_file() {
     die "curl or wget is required for downloads"
   fi
   mv "$tmp" "$dest"
+}
+
+notify_available() {
+  command -v notify-send >/dev/null 2>&1 && [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]
+}
+
+notify_download() {
+  local title="$1" message="$2"
+  notify_available || return 0
+  notify-send -t "$DOWNLOAD_NOTIFY_EXPIRE" "$title" "$message" >/dev/null 2>&1 || true
+}
+
+download_message() {
+  local key="$1" product="$2"
+  if [[ "$(ui_lang)" == "zh" ]]; then
+    case "$key" in
+      start) printf '正在下载并安装 %s...\n' "$product" ;;
+      progress) printf '仍在下载并安装 %s...\n' "$product" ;;
+      done) printf '%s 已安装完成。\n' "$product" ;;
+      failed) printf '%s 下载或安装失败。\n' "$product" ;;
+      timeout) printf '%s 下载超过 10 分钟，已终止。\n' "$product" ;;
+    esac
+  else
+    case "$key" in
+      start) printf 'Downloading and installing %s...\n' "$product" ;;
+      progress) printf 'Still downloading and installing %s...\n' "$product" ;;
+      done) printf '%s has been installed.\n' "$product" ;;
+      failed) printf 'Failed to download or install %s.\n' "$product" ;;
+      timeout) printf '%s download exceeded 10 minutes and was stopped.\n' "$product" ;;
+    esac
+  fi
+}
+
+run_with_download_notifications() {
+  local title product pid elapsed status message
+  title="$1"
+  product="$2"
+  shift 2
+
+  message="$(download_message start "$product")"
+  notify_download "$title" "$message"
+  "$@" &
+  pid=$!
+  elapsed=0
+
+  while kill -0 "$pid" >/dev/null 2>&1; do
+    if (( elapsed >= DOWNLOAD_TIMEOUT_SECONDS )); then
+      kill "$pid" >/dev/null 2>&1 || true
+      sleep 1
+      kill -9 "$pid" >/dev/null 2>&1 || true
+      wait "$pid" >/dev/null 2>&1 || true
+      message="$(download_message timeout "$product")"
+      notify_download "$title" "$message"
+      printf '%s' "$message" >&2
+      return 124
+    fi
+    sleep "$DOWNLOAD_NOTIFY_INTERVAL"
+    elapsed=$((elapsed + DOWNLOAD_NOTIFY_INTERVAL))
+    if kill -0 "$pid" >/dev/null 2>&1; then
+      message="$(download_message progress "$product")"
+      notify_download "$title" "$message"
+    fi
+  done
+
+  set +e
+  wait "$pid"
+  status=$?
+  set -e
+  if [[ $status -eq 0 ]]; then
+    message="$(download_message done "$product")"
+  else
+    message="$(download_message failed "$product")"
+  fi
+  notify_download "$title" "$message"
+  return "$status"
+}
+
+install_runner_with_notifications() {
+  local product title
+  product="$(runner_dir_name "$(normalize_product "$PRODUCT")")"
+  title="Shorin Proton Wrapper"
+  run_with_download_notifications "$title" "$product" install_runner
 }
 
 verify_archive() {
@@ -1018,12 +1123,13 @@ install_runner() {
   mapfile -t info <<< "$release_output"
   tag="${info[0]:-}" archive_name="${info[1]:-}" archive_url="${info[2]:-}" checksum_name="${info[3]:-}" checksum_url="${info[4]:-}"
   [[ -n "$tag" ]] || die "release not found for $product $VERSION"
-  download_dir="$(expand_path "${DOWNLOAD_DIR:-$(xdg_download_dir)}")"
+  download_dir="$(expand_path "${DOWNLOAD_DIR:-$INSTALL_DOWNLOAD_DIR}")"
   install_dir="$(expand_path "${INSTALL_DIR:-$(default_install_dir)}")"
   dir_name="$(runner_target_dir_name "$product" "$VERSION" "$tag")"
   target="$install_dir/$dir_name"
 
   mkdir -p "$download_dir" "$install_dir"
+  find "$download_dir" -maxdepth 1 -type d -name 'install-*' -mmin +1440 -exec rm -rf {} + 2>/dev/null || true
 
   use_existing=0
   temp_download_dir=""
@@ -1039,7 +1145,7 @@ install_runner() {
     use_existing=1
     printf 'Using downloaded files in: %s\n' "$download_dir"
   else
-    temp_download_dir="$(mktemp -d "$download_dir/.proton-install.XXXXXX")"
+    temp_download_dir="$(mktemp -d "$download_dir/install-XXXXXX")"
     work_dir="$temp_download_dir"
     if ! fetch_file "$archive_url" "$work_dir/$archive_name"; then
       cleanup_install_failure
@@ -1122,7 +1228,7 @@ update_runner() {
           if [[ -n "$current" ]]; then
             printf '  %s -> %s\n' "$current" "$tag"
           fi
-          install_runner
+          install_runner_with_notifications
           updated=1
         fi
       fi
@@ -1205,7 +1311,7 @@ ensure_runner_product() {
   PRODUCT="$product"
   VERSION="latest"
   INSTALL_TO="local"
-  install_runner
+  install_runner_with_notifications
 
   PRODUCT="$old_product"
   VERSION="$old_version"
@@ -1663,6 +1769,118 @@ show_status() {
   fi
 }
 
+doctor_status() {
+  local label="$1" status="$2" detail="${3:-}"
+  if [[ -n "$detail" ]]; then
+    printf '%-24s %s  %s\n' "$label" "$status" "$detail"
+  else
+    printf '%-24s %s\n' "$label" "$status"
+  fi
+}
+
+doctor_command() {
+  local label="$1" command_name="$2" path
+  if path="$(command -v "$command_name" 2>/dev/null)"; then
+    doctor_status "$label" ok "$path"
+  else
+    doctor_status "$label" missing "$command_name"
+  fi
+}
+
+doctor_python_module() {
+  local label="$1" module="$2"
+  if python3 - "$module" >/dev/null 2>&1 <<'PY'
+import importlib
+import sys
+
+importlib.import_module(sys.argv[1])
+PY
+  then
+    doctor_status "$label" ok "$module"
+  else
+    doctor_status "$label" missing "$module"
+  fi
+}
+
+doctor_gtk() {
+  if python3 >/dev/null 2>&1 <<'PY'
+import gi
+
+gi.require_version("Gtk", "4.0")
+from gi.repository import Gtk  # noqa: F401
+PY
+  then
+    doctor_status "GTK 4 Python" ok "gi.repository.Gtk"
+  else
+    doctor_status "GTK 4 Python" missing "python-gobject / gtk4"
+  fi
+}
+
+run_doctor() {
+  local old_runner_type old_runner_path initialized default_runner default_runner_detail runner_count i
+  old_runner_type="$RESOLVED_RUNNER_TYPE"
+  old_runner_path="$RESOLVED_RUNNER_PATH"
+
+  printf 'Shorin Proton Wrapper doctor\n'
+  printf '\nCommands:\n'
+  doctor_command "python3" python3
+  doctor_command "curl" curl
+  doctor_command "wget" wget
+  doctor_command "tar" tar
+  doctor_command "sha512sum" sha512sum
+  doctor_command "notify-send" notify-send
+  doctor_gtk
+  doctor_python_module "PyGObject" gi
+
+  printf '\nPaths:\n'
+  doctor_status "prefix" "$PREFIX" "$PREFIX/pfx"
+  doctor_status "install dir" "$LOCAL_RUNNER_DIR"
+  doctor_status "download cache" "$INSTALL_DOWNLOAD_DIR"
+  doctor_status "log dir" "$WRAPPER_CACHE_DIR/logs"
+
+  printf '\nRuntime:\n'
+  if [[ -e /lib/ld-linux.so.2 || -e /usr/lib/ld-linux.so.2 ]]; then
+    doctor_status "32-bit loader" ok "ld-linux.so.2"
+  else
+    doctor_status "32-bit loader" missing "enable multilib and install lib32-cairo on Arch"
+  fi
+  if ldconfig -p 2>/dev/null | grep -q 'libcairo.so.*(libc6'; then
+    doctor_status "32-bit cairo" ok "libcairo.so"
+  else
+    doctor_status "32-bit cairo" unknown "install lib32-cairo on Arch if runners fail"
+  fi
+  if notify_available; then
+    doctor_status "desktop notify" ok
+  else
+    doctor_status "desktop notify" unavailable "notifications will be skipped"
+  fi
+
+  printf '\nRunners:\n'
+  collect_runners
+  runner_count="${#RUNNER_PATHS[@]}"
+  doctor_status "found" "$runner_count"
+  if [[ "$runner_count" -gt 0 ]]; then
+    for i in "${!RUNNER_PATHS[@]}"; do
+      printf '  %s · %s · %s\n' "${RUNNER_NAMES[$i]}" "${RUNNER_SOURCES[$i]}" "${RUNNER_PATHS[$i]}"
+    done
+  fi
+  if try_select_runner >/dev/null 2>&1; then
+    default_runner="$RESOLVED_RUNNER_PATH"
+    default_runner_detail="$RESOLVED_RUNNER_TYPE"
+    doctor_status "default runner" ok "$default_runner_detail · $default_runner"
+  else
+    doctor_status "default runner" missing "run shorin-proton-wrapper --install dw"
+  fi
+
+  printf '\nPrefix:\n'
+  initialized="no"
+  [[ -d "$PREFIX/pfx" ]] && initialized="yes"
+  doctor_status "initialized" "$initialized" "$PREFIX/pfx"
+
+  RESOLVED_RUNNER_TYPE="$old_runner_type"
+  RESOLVED_RUNNER_PATH="$old_runner_path"
+}
+
 parse_args() {
   if [[ $# -eq 0 ]]; then
     usage
@@ -1826,6 +2044,10 @@ parse_args() {
         ACTION="update"
         shift
         ;;
+      --doctor)
+        ACTION="doctor"
+        shift
+        ;;
       --remove)
         [[ $# -ge 2 ]] || die "$1 requires ge or dw"
         ACTION="remove"
@@ -1902,7 +2124,10 @@ case "$ACTION" in
     download_runner
     ;;
   install)
-    install_runner
+    install_runner_with_notifications
+    ;;
+  doctor)
+    run_doctor
     ;;
   update)
     update_runner

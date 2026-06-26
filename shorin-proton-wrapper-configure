@@ -13,7 +13,7 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
-from gi.repository import Gdk, Gio, Gtk
+from gi.repository import Gdk, Gio, GLib, Gtk
 
 
 def is_zh() -> bool:
@@ -62,6 +62,10 @@ TEXT = {
     "env_vars": "环境变量" if ZH else "Environment variables",
     "env_vars_desc": "例如: DXVK_ASYNC=1 PROTON_NO_ESYNC=1" if ZH else "Example: DXVK_ASYNC=1 PROTON_NO_ESYNC=1",
     "mangohud_missing": "未安装 MangoHud" if ZH else "MangoHud is not installed",
+    "download_runner_title": "安装运行器" if ZH else "Install Runner",
+    "download_runner_question": "没有找到 Proton 或 Wine 运行器。是否下载并安装 DW-Proton？" if ZH else "No Proton or Wine runner was found. Download and install DW-Proton?",
+    "downloading_runner": "正在下载并安装 DW-Proton..." if ZH else "Downloading and installing DW-Proton...",
+    "download_failed": "下载或安装运行器失败。" if ZH else "Failed to download or install the runner.",
     "extra_args": "额外参数" if ZH else "Extra arguments",
     "extra_args_desc": "高级选项：直接追加到 gamescope 命令。" if ZH else "Advanced: appended directly to the gamescope command.",
     "invalid_resolution": "分辨率格式应为 宽x高，例如 1920x1080。" if ZH else "Resolution must be WIDTHxHEIGHT, e.g. 1920x1080.",
