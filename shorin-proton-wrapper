@@ -9,12 +9,12 @@ LOCAL_RUNNER_DIR="$XDG_DATA_HOME_VALUE/proton/runners"
 WRAPPER_CACHE_DIR="$XDG_CACHE_HOME_VALUE/shorin-proton-wrapper"
 INSTALL_DOWNLOAD_DIR="$WRAPPER_CACHE_DIR/downloads"
 DOWNLOAD_TIMEOUT_SECONDS="${SHORIN_PROTON_WRAPPER_DOWNLOAD_TIMEOUT:-600}"
-DOWNLOAD_NOTIFY_INTERVAL="${SHORIN_PROTON_WRAPPER_NOTIFY_INTERVAL:-30}"
+DOWNLOAD_NOTIFY_INTERVAL="${SHORIN_PROTON_WRAPPER_NOTIFY_INTERVAL:-8}"
 DOWNLOAD_NOTIFY_EXPIRE="${SHORIN_PROTON_WRAPPER_NOTIFY_EXPIRE:-8000}"
 STEAM_ROOT="${STEAM_COMPAT_CLIENT_INSTALL_PATH:-$HOME/.steam/root}"
 
 [[ "$DOWNLOAD_TIMEOUT_SECONDS" =~ ^[0-9]+$ && "$DOWNLOAD_TIMEOUT_SECONDS" -gt 0 ]] || DOWNLOAD_TIMEOUT_SECONDS=600
-[[ "$DOWNLOAD_NOTIFY_INTERVAL" =~ ^[0-9]+$ && "$DOWNLOAD_NOTIFY_INTERVAL" -gt 0 ]] || DOWNLOAD_NOTIFY_INTERVAL=30
+[[ "$DOWNLOAD_NOTIFY_INTERVAL" =~ ^[0-9]+$ && "$DOWNLOAD_NOTIFY_INTERVAL" -gt 0 ]] || DOWNLOAD_NOTIFY_INTERVAL=8
 [[ "$DOWNLOAD_NOTIFY_EXPIRE" =~ ^[0-9]+$ && "$DOWNLOAD_NOTIFY_EXPIRE" -gt 0 ]] || DOWNLOAD_NOTIFY_EXPIRE=8000
 
 ACTION=""
@@ -928,7 +928,7 @@ PY
 }
 
 fetch_file() {
-  local url="$1" dest="$2" tmp timeout_prefix
+  local url="$1" dest="$2" tmp timeout_prefix product title status
   if [[ -s "$dest" ]]; then
     printf 'Using existing: %s\n' "$dest"
     return 0
@@ -940,14 +940,24 @@ fetch_file() {
   if command -v timeout >/dev/null 2>&1; then
     timeout_prefix=(timeout "${DOWNLOAD_TIMEOUT_SECONDS}s")
   fi
+  product="${DOWNLOAD_NOTIFY_PRODUCT:-$(basename "$dest")}"
+  title="Shorin Proton Wrapper"
   if command -v curl >/dev/null 2>&1; then
-    if ! "${timeout_prefix[@]}" curl -L --fail --progress-bar --connect-timeout 30 --max-time "$DOWNLOAD_TIMEOUT_SECONDS" -o "$tmp" "$url"; then
+    set +e
+    run_download_command_with_notifications "$title" "$product" "${timeout_prefix[@]}" curl -L --fail --progress-bar --connect-timeout 30 --max-time "$DOWNLOAD_TIMEOUT_SECONDS" -o "$tmp" "$url"
+    status=$?
+    set -e
+    if [[ $status -ne 0 ]]; then
       rm -f "$tmp"
       printf 'shorin-proton-wrapper: download failed: %s -> %s\n' "$url" "$dest" >&2
       return 1
     fi
   elif command -v wget >/dev/null 2>&1; then
-    if ! "${timeout_prefix[@]}" wget --timeout=30 --tries=3 -O "$tmp" "$url"; then
+    set +e
+    run_download_command_with_notifications "$title" "$product" "${timeout_prefix[@]}" wget --timeout=30 --tries=3 -O "$tmp" "$url"
+    status=$?
+    set -e
+    if [[ $status -ne 0 ]]; then
       rm -f "$tmp"
       printf 'shorin-proton-wrapper: download failed: %s -> %s\n' "$url" "$dest" >&2
       return 1
@@ -965,7 +975,7 @@ notify_available() {
 notify_download() {
   local title="$1" message="$2"
   notify_available || return 0
-  notify-send -t "$DOWNLOAD_NOTIFY_EXPIRE" "$title" "$message" >/dev/null 2>&1 || true
+  notify-send -i shorin-proton -t "$DOWNLOAD_NOTIFY_EXPIRE" "$title" "$message" >/dev/null 2>&1 || true
 }
 
 download_message() {
@@ -974,6 +984,7 @@ download_message() {
     case "$key" in
       start) printf '正在下载并安装 %s...\n' "$product" ;;
       progress) printf '仍在下载并安装 %s...\n' "$product" ;;
+      downloaded) printf '%s 下载完成，正在安装...\n' "$product" ;;
       done) printf '%s 已安装完成。\n' "$product" ;;
       failed) printf '%s 下载或安装失败。\n' "$product" ;;
       timeout) printf '%s 下载超过 10 分钟，已终止。\n' "$product" ;;
@@ -982,6 +993,7 @@ download_message() {
     case "$key" in
       start) printf 'Downloading and installing %s...\n' "$product" ;;
       progress) printf 'Still downloading and installing %s...\n' "$product" ;;
+      downloaded) printf '%s download completed. Installing...\n' "$product" ;;
       done) printf '%s has been installed.\n' "$product" ;;
       failed) printf 'Failed to download or install %s.\n' "$product" ;;
       timeout) printf '%s download exceeded 10 minutes and was stopped.\n' "$product" ;;
@@ -989,8 +1001,8 @@ download_message() {
   fi
 }
 
-run_with_download_notifications() {
-  local title product pid elapsed status message
+run_download_command_with_notifications() {
+  local title product pid notifier_pid status message
   title="$1"
   product="$2"
   shift 2
@@ -999,33 +1011,25 @@ run_with_download_notifications() {
   notify_download "$title" "$message"
   "$@" &
   pid=$!
-  elapsed=0
-
-  while kill -0 "$pid" >/dev/null 2>&1; do
-    if (( elapsed >= DOWNLOAD_TIMEOUT_SECONDS )); then
-      kill "$pid" >/dev/null 2>&1 || true
-      sleep 1
-      kill -9 "$pid" >/dev/null 2>&1 || true
-      wait "$pid" >/dev/null 2>&1 || true
-      message="$(download_message timeout "$product")"
-      notify_download "$title" "$message"
-      printf '%s' "$message" >&2
-      return 124
-    fi
-    sleep "$DOWNLOAD_NOTIFY_INTERVAL"
-    elapsed=$((elapsed + DOWNLOAD_NOTIFY_INTERVAL))
-    if kill -0 "$pid" >/dev/null 2>&1; then
+  (
+    while sleep "$DOWNLOAD_NOTIFY_INTERVAL"; do
+      kill -0 "$pid" >/dev/null 2>&1 || exit 0
       message="$(download_message progress "$product")"
       notify_download "$title" "$message"
-    fi
-  done
+    done
+  ) &
+  notifier_pid=$!
 
   set +e
   wait "$pid"
   status=$?
   set -e
+  kill "$notifier_pid" >/dev/null 2>&1 || true
+  wait "$notifier_pid" >/dev/null 2>&1 || true
   if [[ $status -eq 0 ]]; then
-    message="$(download_message done "$product")"
+    message="$(download_message downloaded "$product")"
+  elif [[ $status -eq 124 ]]; then
+    message="$(download_message timeout "$product")"
   else
     message="$(download_message failed "$product")"
   fi
@@ -1034,10 +1038,28 @@ run_with_download_notifications() {
 }
 
 install_runner_with_notifications() {
-  local product title
+  local product title message status old_product
   product="$(runner_dir_name "$(normalize_product "$PRODUCT")")"
   title="Shorin Proton Wrapper"
-  run_with_download_notifications "$title" "$product" install_runner
+  old_product="${DOWNLOAD_NOTIFY_PRODUCT:-}"
+  DOWNLOAD_NOTIFY_PRODUCT="$product"
+  set +e
+  install_runner
+  status=$?
+  set -e
+  if [[ -n "$old_product" ]]; then
+    DOWNLOAD_NOTIFY_PRODUCT="$old_product"
+  else
+    unset DOWNLOAD_NOTIFY_PRODUCT
+  fi
+  if [[ $status -ne 0 ]]; then
+    message="$(download_message failed "$product")"
+    notify_download "$title" "$message"
+  else
+    message="$(download_message done "$product")"
+    notify_download "$title" "$message"
+  fi
+  return "$status"
 }
 
 verify_archive() {

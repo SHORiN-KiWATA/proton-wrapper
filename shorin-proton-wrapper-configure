@@ -65,6 +65,7 @@ TEXT = {
     "download_runner_title": "安装运行器" if ZH else "Install Runner",
     "download_runner_question": "没有找到 Proton 或 Wine 运行器。是否下载并安装 DW-Proton？" if ZH else "No Proton or Wine runner was found. Download and install DW-Proton?",
     "downloading_runner": "正在下载并安装 DW-Proton..." if ZH else "Downloading and installing DW-Proton...",
+    "download_wait": "下载和安装可能需要几分钟，请稍候" if ZH else "This may take a few minutes. Please wait",
     "download_failed": "下载或安装运行器失败。" if ZH else "Failed to download or install the runner.",
     "extra_args": "额外参数" if ZH else "Extra arguments",
     "extra_args_desc": "高级选项：直接追加到 gamescope 命令。" if ZH else "Advanced: appended directly to the gamescope command.",
@@ -490,13 +491,26 @@ class SelectorApp(Gtk.Application):
         box.set_margin_end(20)
         box.set_halign(Gtk.Align.CENTER)
         box.set_valign(Gtk.Align.CENTER)
-        spinner = Gtk.Spinner()
-        spinner.start()
+        progress = Gtk.ProgressBar()
+        progress.set_size_request(260, -1)
+        progress.set_pulse_step(0.08)
         label = Gtk.Label(label=TEXT["downloading_runner"])
-        box.append(spinner)
+        detail = Gtk.Label(label=TEXT["download_wait"])
+        detail.add_css_class("dim-label")
+        box.append(progress)
         box.append(label)
+        box.append(detail)
         spinner_window.set_child(box)
         spinner_window.present()
+        tick = {"count": 0}
+
+        def pulse_progress():
+            tick["count"] += 1
+            progress.pulse()
+            label.set_text(TEXT["downloading_runner"].rstrip(".") + "." * ((tick["count"] % 3) + 1))
+            return True
+
+        pulse_id = GLib.timeout_add(500, pulse_progress)
 
         def run_download():
             try:
@@ -511,6 +525,7 @@ class SelectorApp(Gtk.Application):
                 return False
 
         def on_download_done(result, error):
+            GLib.source_remove(pulse_id)
             spinner_window.close()
             if error or not result:
                 self.show_error(TEXT["download_failed"])
