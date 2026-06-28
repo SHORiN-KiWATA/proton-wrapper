@@ -63,8 +63,8 @@ TEXT = {
     "env_vars_desc": "例如: DXVK_ASYNC=1 PROTON_NO_ESYNC=1" if ZH else "Example: DXVK_ASYNC=1 PROTON_NO_ESYNC=1",
     "mangohud_missing": "未安装 MangoHud" if ZH else "MangoHud is not installed",
     "download_runner_title": "安装运行器" if ZH else "Install Runner",
-    "download_runner_question": "没有找到 Proton 或 Wine 运行器。是否下载并安装 DW-Proton？" if ZH else "No Proton or Wine runner was found. Download and install DW-Proton?",
-    "downloading_runner": "正在下载并安装 DW-Proton..." if ZH else "Downloading and installing DW-Proton...",
+    "download_runner_question": "{name} 尚未安装。是否下载并安装？" if ZH else "{name} is not installed. Download and install it?",
+    "downloading_runner": "正在下载并安装 {name}..." if ZH else "Downloading and installing {name}...",
     "download_wait": "下载和安装可能需要几分钟，请稍候" if ZH else "This may take a few minutes. Please wait",
     "download_failed": "下载或安装运行器失败。" if ZH else "Failed to download or install the runner.",
     "extra_args": "额外参数" if ZH else "Extra arguments",
@@ -75,10 +75,15 @@ TEXT = {
     "select_prefix": "请选择前置环境目录。" if ZH else "Select a prefix directory.",
     "select_runner": "请选择运行器。" if ZH else "Select a runner.",
     "no_exe_error": "shorin-proton-wrapper-configure: 未提供可执行文件" if ZH else "shorin-proton-wrapper-configure: no executable provided",
+    "not_installed": "未安装" if ZH else "not installed",
 }
 
 COMMON_RESOLUTIONS = ["1280x720", "1600x900", "1920x1080", "2560x1440", "3840x2160"]
 COMMON_FPS = ["30", "40", "45", "60", "90", "120", "144", "165", "240"]
+DEFAULT_RUNNERS = (
+    {"id": "dw", "name": "DW-Proton", "dir_name": "DW-Proton Latest"},
+    {"id": "ge", "name": "Proton-GE", "dir_name": "Proton-GE Latest"},
+)
 
 
 def is_resolution(value: str) -> bool:
@@ -165,6 +170,8 @@ def card(title: str, description: str | None = None):
 
 
 def runner_label(runner: dict) -> str:
+    if runner.get("install_id") and not runner.get("path"):
+        return f'{runner["name"]} · {TEXT["not_installed"]}'
     detail = runner.get("source") or runner.get("type")
     return f'{runner["name"]} · {detail}' if detail else runner["name"]
 
@@ -369,12 +376,52 @@ def parse_runners(output: str):
     return runners
 
 
+def runner_default_id(runner: dict) -> str:
+    path = runner.get("path", "")
+    name = runner.get("name", "")
+    for default in DEFAULT_RUNNERS:
+        dir_name = default["dir_name"]
+        if name == dir_name or f"/{dir_name}/" in path:
+            return default["id"]
+    return ""
+
+
+def with_default_runners(installed: list[dict]) -> list[dict]:
+    runners = []
+    seen_paths = set()
+    installed_defaults = set()
+    for runner in installed:
+        path = runner.get("path", "")
+        if path in seen_paths:
+            continue
+        seen_paths.add(path)
+        default_id = runner_default_id(runner)
+        if default_id in installed_defaults:
+            continue
+        if default_id:
+            runner = {**runner, "default_id": default_id}
+            installed_defaults.add(default_id)
+        runners.append(runner)
+
+    for default in DEFAULT_RUNNERS:
+        if default["id"] in installed_defaults:
+            continue
+        runners.append({
+            "name": default["name"],
+            "type": "proton",
+            "source": TEXT["not_installed"],
+            "path": "",
+            "install_id": default["id"],
+        })
+    return runners
+
+
 def load_runners(wrapper: str):
     try:
         result = subprocess.run([wrapper, "--list-runner"], check=False, text=True, capture_output=True)
     except OSError:
-        return []
-    return parse_runners(result.stdout)
+        return with_default_runners([])
+    return with_default_runners(parse_runners(result.stdout))
 
 
 def gamescope_args(options: dict) -> list[str]:
@@ -428,6 +475,7 @@ class SelectorApp(Gtk.Application):
         self.exe_entry = None
         self.prefix_entry = None
         self.selected_runner = None
+        self.selected_runner_install_id = None
         self.runners = []
         self.runner_combo = None
         self.runner_detail = None
@@ -463,25 +511,31 @@ class SelectorApp(Gtk.Application):
         dialog.connect("response", lambda d, _r: d.close())
         dialog.present()
 
-    def offer_download_runner(self):
+    def offer_download_runner(self, runner: dict, prefix: str, options: dict, old_cache_file: Path):
+        name = runner.get("name") or runner.get("install_id") or TEXT["runner"]
         dialog = Gtk.MessageDialog(
             transient_for=self.window,
             modal=True,
             message_type=Gtk.MessageType.QUESTION,
             buttons=Gtk.ButtonsType.YES_NO,
             text=TEXT["download_runner_title"],
-            secondary_text=TEXT["download_runner_question"],
+            secondary_text=TEXT["download_runner_question"].format(name=name),
         )
 
         def on_response(_d, response):
             dialog.close()
             if response == Gtk.ResponseType.YES:
-                self.download_runner_async()
+                self.download_runner_async(runner, prefix, options, old_cache_file)
 
         dialog.connect("response", on_response)
         dialog.present()
 
-    def download_runner_async(self):
+    def download_runner_async(self, runner: dict, prefix: str, options: dict, old_cache_file: Path):
+        install_id = runner.get("install_id")
+        if not install_id:
+            self.show_error(TEXT["select_runner"])
+            return
+        name = runner.get("name") or install_id or TEXT["runner"]
         spinner_window = Gtk.ApplicationWindow(application=self, title=TEXT["download_runner_title"])
         spinner_window.set_default_size(360, 120)
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
@@ -494,7 +548,8 @@ class SelectorApp(Gtk.Application):
         progress = Gtk.ProgressBar()
         progress.set_size_request(260, -1)
         progress.set_pulse_step(0.08)
-        label = Gtk.Label(label=TEXT["downloading_runner"])
+        downloading_text = TEXT["downloading_runner"].format(name=name)
+        label = Gtk.Label(label=downloading_text)
         detail = Gtk.Label(label=TEXT["download_wait"])
         detail.add_css_class("dim-label")
         box.append(progress)
@@ -507,7 +562,7 @@ class SelectorApp(Gtk.Application):
         def pulse_progress():
             tick["count"] += 1
             progress.pulse()
-            label.set_text(TEXT["downloading_runner"].rstrip(".") + "." * ((tick["count"] % 3) + 1))
+            label.set_text(downloading_text.rstrip(".") + "." * ((tick["count"] % 3) + 1))
             return True
 
         pulse_id = GLib.timeout_add(500, pulse_progress)
@@ -515,7 +570,7 @@ class SelectorApp(Gtk.Application):
         def run_download():
             try:
                 result = subprocess.run(
-                    [self.wrapper, "--install", "dw"],
+                    [self.wrapper, "--install", install_id],
                     check=False,
                     text=True,
                     capture_output=True,
@@ -531,15 +586,15 @@ class SelectorApp(Gtk.Application):
                 self.show_error(TEXT["download_failed"])
                 return
             self.runners = load_runners(self.wrapper)
-            if not self.runners:
+            installed = next((item for item in self.runners if item.get("default_id") == install_id and item.get("path")), None)
+            if not installed:
                 self.show_error(TEXT["no_runner"])
                 return
-            self.runner_combo.remove_all()
-            for index, runner in enumerate(self.runners):
-                self.runner_combo.append(str(index), runner_label(runner))
-            self.runner_combo.set_active_id("0")
-            self.selected_runner = self.runners[0]["path"]
-            self.update_runner_detail()
+            self.populate_runner_combo(installed["path"])
+            write_cache(self.cache_file, self.exe, prefix, installed["path"], options)
+            if old_cache_file != self.cache_file:
+                old_cache_file.unlink(missing_ok=True)
+            self.run_with(prefix, installed["path"], options)
 
         import threading
 
@@ -672,15 +727,8 @@ class SelectorApp(Gtk.Application):
         self.runner_combo = Gtk.ComboBoxText(hexpand=False)
         self.runner_combo.set_size_request(260, -1)
         initial_runner = (initial or {}).get("runner", "")
-        active_index = 0
-        for index, runner in enumerate(self.runners):
-            self.runner_combo.append(str(index), runner_label(runner))
-            if runner["path"] == initial_runner:
-                active_index = index
-        if self.runners:
-            self.runner_combo.set_active_id(str(active_index))
-            self.selected_runner = self.runners[active_index]["path"]
         self.runner_combo.connect("changed", self.on_runner_changed)
+        self.populate_runner_combo(initial_runner)
         runner_box.append(self.runner_combo)
         runner_card.append(runner_box)
 
@@ -813,18 +861,37 @@ class SelectorApp(Gtk.Application):
 
         self.window.set_child(outer)
         self.window.present()
-        if not self.runners:
-            self.offer_download_runner()
+
+    def populate_runner_combo(self, active_path: str = ""):
+        if not self.runner_combo:
+            return
+        self.runner_combo.remove_all()
+        self.selected_runner = None
+        self.selected_runner_install_id = None
+        active_index = 0
+        for index, runner in enumerate(self.runners):
+            self.runner_combo.append(str(index), runner_label(runner))
+            if active_path and runner.get("path") == active_path:
+                active_index = index
+        if self.runners:
+            self.runner_combo.set_active_id(str(active_index))
+            self.set_selected_runner(self.runners[active_index])
+        self.update_runner_detail()
+
+    def set_selected_runner(self, runner: dict):
+        self.selected_runner = runner.get("path") or None
+        self.selected_runner_install_id = runner.get("install_id") or None
 
     def on_runner_changed(self, combo):
         active_id = combo.get_active_id()
         if active_id is None:
             self.selected_runner = None
+            self.selected_runner_install_id = None
             self.update_runner_detail()
             return
         index = int(active_id)
         if 0 <= index < len(self.runners):
-            self.selected_runner = self.runners[index]["path"]
+            self.set_selected_runner(self.runners[index])
         self.update_runner_detail()
 
     def update_runner_detail(self):
@@ -837,7 +904,10 @@ class SelectorApp(Gtk.Application):
         index = int(active_id)
         if 0 <= index < len(self.runners):
             runner = self.runners[index]
-            self.runner_detail.set_text(f'{runner["type"]} · {runner["source"]}\n{runner["path"]}')
+            if runner.get("install_id") and not runner.get("path"):
+                self.runner_detail.set_text(f'{runner["type"]} · {runner["source"]}')
+            else:
+                self.runner_detail.set_text(f'{runner["type"]} · {runner["source"]}\n{runner["path"]}')
         else:
             self.runner_detail.set_text("")
 
@@ -934,11 +1004,22 @@ class SelectorApp(Gtk.Application):
         if not prefix:
             self.show_error(TEXT["select_prefix"])
             return
-        if not self.selected_runner:
-            self.show_error(TEXT["select_runner"])
-            return
         options = self.selected_gamescope_options()
         if options is None:
+            return
+        if self.selected_runner_install_id:
+            active_id = self.runner_combo.get_active_id() if self.runner_combo else None
+            if active_id is None:
+                self.show_error(TEXT["select_runner"])
+                return
+            index = int(active_id)
+            if not 0 <= index < len(self.runners):
+                self.show_error(TEXT["select_runner"])
+                return
+            self.offer_download_runner(self.runners[index], prefix, options, old_cache_file)
+            return
+        if not self.selected_runner:
+            self.show_error(TEXT["select_runner"])
             return
         write_cache(self.cache_file, self.exe, prefix, self.selected_runner, options)
         if old_cache_file != self.cache_file:
