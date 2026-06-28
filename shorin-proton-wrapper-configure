@@ -171,7 +171,7 @@ def card(title: str, description: str | None = None):
 
 def runner_label(runner: dict) -> str:
     if runner.get("install_id") and not runner.get("path"):
-        return f'{runner["name"]} · {TEXT["not_installed"]}'
+        return f'{runner["name"]} · local ({TEXT["not_installed"]})'
     detail = runner.get("source") or runner.get("type")
     return f'{runner["name"]} · {detail}' if detail else runner["name"]
 
@@ -389,27 +389,26 @@ def runner_default_id(runner: dict) -> str:
 def with_default_runners(installed: list[dict]) -> list[dict]:
     runners = []
     seen_paths = set()
-    installed_defaults = set()
+    installed_local_defaults = set()
     for runner in installed:
         path = runner.get("path", "")
         if path in seen_paths:
             continue
         seen_paths.add(path)
         default_id = runner_default_id(runner)
-        if default_id in installed_defaults:
-            continue
         if default_id:
             runner = {**runner, "default_id": default_id}
-            installed_defaults.add(default_id)
+            if runner.get("source") == "local":
+                installed_local_defaults.add(default_id)
         runners.append(runner)
 
     for default in DEFAULT_RUNNERS:
-        if default["id"] in installed_defaults:
+        if default["id"] in installed_local_defaults:
             continue
         runners.append({
             "name": default["name"],
             "type": "proton",
-            "source": TEXT["not_installed"],
+            "source": f'local ({TEXT["not_installed"]})',
             "path": "",
             "install_id": default["id"],
         })
