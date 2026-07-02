@@ -158,6 +158,7 @@ Options:
   --list-version ge|dw    list available runner versions
   --version VERSION       use specific release tag, default latest
   --update                update all installed Latest runners
+  --check-update          check for available runner updates (no install)
   --doctor                check wrapper environment and print diagnostics
   --remove ge|dw          remove runner from ~/.local/share/proton/runners
   --remove-steam ge|dw    remove runner from Steam, omit ge|dw to remove all wrapper-installed runners
@@ -201,6 +202,7 @@ usage_zh() {
   --list-version ge|dw    列出可使用的运行器版本
   --version 版本          指定特定版本，默认 latest
   --update                升级所有已安装的 Latest 运行器
+  --check-update          检查运行器是否有可用更新（不安装）
   --doctor                检查 wrapper 运行环境并输出诊断信息
   --remove ge|dw          移除默认位置中已安装的运行器
   --remove-steam ge|dw    移除 Steam 中指定运行器，省略 ge|dw 则移除全部由 wrapper 安装的运行器
@@ -258,6 +260,7 @@ Install runner:
 
 Update runners:
   shorin-proton-wrapper --update
+  shorin-proton-wrapper --check-update
 
 Diagnostics:
   shorin-proton-wrapper --doctor
@@ -311,6 +314,7 @@ usage_full_zh() {
 
 更新运行器:
   shorin-proton-wrapper --update
+  shorin-proton-wrapper --check-update
 
 诊断:
   shorin-proton-wrapper --doctor
@@ -1275,6 +1279,42 @@ update_runner() {
   fi
 }
 
+check_update_runner() {
+  local product target release_output info tag current found has_update
+  local install_to_old old_product old_version
+  install_to_old="$INSTALL_TO"
+  old_product="$PRODUCT"
+  old_version="$VERSION"
+  VERSION="latest"
+  found=0
+  has_update=0
+
+  for INSTALL_TO in local steam lutris; do
+    for product in ge dw; do
+      PRODUCT="$product"
+      target="$(expand_path "$(default_install_dir)")/$(runner_dir_name "$product")"
+      if [[ -e "$target" ]]; then
+        found=1
+        release_output="$(release_info "$product" latest 2>/dev/null)" || continue
+        mapfile -t info <<< "$release_output"
+        tag="${info[0]:-}"
+        [[ -n "$tag" ]] || continue
+        current="$(installed_runner_version "$target" "$product" 2>/dev/null || true)"
+        if [[ -n "$current" && "$current" != "$tag" ]]; then
+          printf '%s\t%s\t->\t%s\t(%s)\n' "$product" "$current" "$tag" "$INSTALL_TO"
+          has_update=1
+        fi
+      fi
+    done
+  done
+
+  INSTALL_TO="$install_to_old"
+  PRODUCT="$old_product"
+  VERSION="$old_version"
+  [[ $found -eq 1 ]] || return 0
+  return 0
+}
+
 remove_runner() {
   local product dir_name install_dir target lang
   product="$(normalize_product "$PRODUCT")"
@@ -2075,6 +2115,10 @@ parse_args() {
         ACTION="update"
         shift
         ;;
+      --check-update)
+        ACTION="check-update"
+        shift
+        ;;
       --doctor)
         ACTION="doctor"
         shift
@@ -2162,6 +2206,9 @@ case "$ACTION" in
     ;;
   update)
     update_runner
+    ;;
+  check-update)
+    check_update_runner
     ;;
   remove)
     remove_runner
