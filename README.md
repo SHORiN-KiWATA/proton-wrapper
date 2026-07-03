@@ -2,9 +2,9 @@
 
 一直以来，用 Proton 运行 exe 大多通过添加非 Steam 游戏或者Lutris之类的方式，难以做到`双击直接运行`般无缝的交互体验，所以我制作了 `shorin-proton-wrapper`。最大的特点是安装后可以直接运行 exe，无须任何前置操作。
 
->注意，这只是个包装器，原本 Proton 运行不了的软件依旧会运行不了。
+Arch Linux 可以从AIUR安装。
 
-Arch Linux 需要启用 `[multilib]`，并安装 `lib32-cairo`。如果使用 PKGBUILD 安装，建议将 `lib32-cairo` 写入依赖；未启用 multilib 时依赖解析会失败，需要用户先开启 multilib。
+>注意，这只是个包装器，原本 Proton 运行不了的软件依旧会运行不了。
 
 ![](./pics/1.png)
 
