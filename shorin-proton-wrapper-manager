@@ -3,6 +3,7 @@ import hashlib
 import locale
 import os
 import signal
+import shutil
 import struct
 import subprocess
 import sys
@@ -41,8 +42,10 @@ TEXT = {
     "refresh": "刷新" if ZH else "Refresh",
     "open_prefix": "打开前置环境目录" if ZH else "Open Prefix Folder",
     "cancel": "取消" if ZH else "Cancel",
-    "apps": "已安装程序" if ZH else "Installed Apps",
+    "apps": "应用" if ZH else "Apps",
     "library": "仓库" if ZH else "Repository",
+    "install_dirs": "目录" if ZH else "Folders",
+    "install_dirs_desc": "可能包含 Windows 程序的安装目录。选择目录中的 exe 后会创建应用配置。" if ZH else "Install folders that may contain Windows apps. Pick an exe to create an app config.",
     "processes": "进程" if ZH else "Processes",
     "config": "配置" if ZH else "Config",
     "add_config": "添加配置" if ZH else "Add Config",
@@ -80,6 +83,7 @@ TEXT = {
     "env_vars": "环境变量" if ZH else "Environment variables",
     "delete": "删除缓存" if ZH else "Delete Cache",
     "no_apps": "没有找到 Windows 快捷方式。" if ZH else "No Windows shortcuts found.",
+    "no_install_dirs": "没有找到包含 exe 的安装目录。" if ZH else "No install folders with executables found.",
     "no_processes": "没有找到该前置环境的运行进程。" if ZH else "No processes found for this prefix.",
     "no_cache": "没有保存过的 exe 配置。" if ZH else "No saved exe configs.",
     "exported": "已导出" if ZH else "Exported",
@@ -97,6 +101,16 @@ TEXT = {
     "no_update": "已是最新版本" if ZH else "Up to date",
     "processes_desc": "按 WINEPREFIX / STEAM_COMPAT_DATA_PATH 追踪并强制关闭进程。" if ZH else "Tracks and force closes processes by WINEPREFIX / STEAM_COMPAT_DATA_PATH.",
     "cache_desc": "管理通过“设置 Windows 软件运行环境”保存的 exe 配置。" if ZH else "Manage exe configs saved by Configure Windows Software.",
+    "view_exes": "应用列表" if ZH else "App List",
+    "add_app": "加入应用" if ZH else "Add App",
+    "delete_dir": "删除目录" if ZH else "Delete Folder",
+    "delete_dir_title": "删除安装目录" if ZH else "Delete Install Folder",
+    "delete_dir_confirm": "将永久删除以下目录及其中所有文件：\n\n{path}\n\n这不会运行 Windows 卸载程序，可能留下注册表、快捷方式和配置残留。是否继续？" if ZH else "This will permanently delete this folder and all files inside:\n\n{path}\n\nThis will not run the Windows uninstaller and may leave registry entries, shortcuts, and config files behind. Continue?",
+    "delete_dir_blocked": "出于安全原因，不能删除此目录。" if ZH else "This folder cannot be deleted for safety reasons.",
+    "recommended_exes": "推荐入口" if ZH else "Recommended Entries",
+    "other_exes": "其他可执行文件" if ZH else "Other Executables",
+    "exe_count": "{count} 个 exe" if ZH else "{count} exe files",
+    "linked_apps": "已关联应用 {count} 个" if ZH else "{count} linked apps",
 }
 
 
@@ -323,6 +337,181 @@ def windows_install_roots(prefix: Path) -> list[Path]:
         pfx / "users" / user / "AppData" / "Local",
         pfx / "users" / user / "AppData" / "Roaming",
     ]
+
+
+IGNORED_INSTALL_DIR_NAMES = {
+    "$recycle.bin", "common files", "desktop", "directx", "drivers", "installer",
+    "microsoft", "microsoft shared", "package cache", "packages", "programdata",
+    "redist", "redistributable", "temp", "tmp", "vc", "vcredist", "windows",
+    "internet explorer", "microsoft.net", "modifiablewindowsapps", "windows mail",
+    "steam", "windows media player", "windows nt", "windows photo viewer",
+}
+
+LOW_VALUE_EXE_WORDS = {
+    "7z", "cefsubprocess", "crash", "crashreport", "crashreporter", "dxsetup",
+    "helper", "install", "installer", "patch", "qtwebengineprocess", "redist",
+    "repair", "report", "service", "setup", "unins", "uninstall", "unitycrashhandler",
+    "update", "updater", "vc_redist", "vcredist",
+}
+
+
+def normalize_match_name(value: str) -> str:
+    return "".join(char.lower() for char in value if char.isalnum())
+
+
+def is_ignored_install_dir(path: Path) -> bool:
+    lower = path.name.lower().strip()
+    if not lower or lower in IGNORED_INSTALL_DIR_NAMES:
+        return True
+    return lower.startswith("windows ") or any(word in lower for word in ("redist", "vcredist", "webview", "crashreport", "uninstall"))
+
+
+def is_low_value_exe(path: Path) -> bool:
+    lower = path.stem.lower().replace("-", "_").replace(" ", "_")
+    return any(word in lower for word in LOW_VALUE_EXE_WORDS)
+
+
+def windows_display_path(prefix: Path, path: Path) -> str:
+    prefix = expand_path(prefix)
+    path = expand_path(path)
+    drive_c = prefix / "pfx" / "drive_c"
+    try:
+        return "C:\\" + str(path.relative_to(drive_c)).replace("/", "\\")
+    except ValueError:
+        return str(path)
+
+
+def safe_relative_path(root: Path, path: Path) -> str:
+    try:
+        rel = path.relative_to(root)
+    except ValueError:
+        return str(path)
+    text = str(rel.parent)
+    return "根目录" if ZH and text == "." else "root" if text == "." else text
+
+
+def file_size_label(path: Path) -> str:
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return ""
+    if size >= 1024 * 1024:
+        return f"{size / 1024 / 1024:.1f} MB"
+    if size >= 1024:
+        return f"{size / 1024:.0f} KB"
+    return f"{size} B"
+
+
+def scan_exes_in_dir(directory: Path, limit: int = 300) -> list[dict[str, object]]:
+    directory = expand_path(directory)
+    if not directory.is_dir():
+        return []
+    root_name = normalize_match_name(directory.name)
+    result = []
+    scanned = 0
+    for exe in sorted(directory.rglob("*.exe"), key=lambda item: str(item).lower()):
+        scanned += 1
+        if scanned > limit:
+            break
+        if not exe.is_file():
+            continue
+        low_value = is_low_value_exe(exe)
+        score = 0
+        stem = normalize_match_name(exe.stem)
+        if stem and root_name and (stem == root_name or stem in root_name or root_name in stem):
+            score += 80
+        if exe.parent == directory:
+            score += 35
+        if exe.parent.name.lower() in {"bin", "game", "games", "launcher", "client"}:
+            score += 12
+        try:
+            if exe.stat().st_size >= 1024 * 1024:
+                score += 10
+        except OSError:
+            pass
+        if low_value:
+            score -= 100
+        result.append({
+            "path": exe,
+            "name": exe.name,
+            "low_value": low_value,
+            "score": score,
+            "detail": f"{safe_relative_path(directory, exe)} · {file_size_label(exe)}".strip(" ·"),
+        })
+    return sorted(result, key=lambda item: (-int(item["score"]), bool(item["low_value"]), str(item["path"]).lower()))
+
+
+def app_path_under_dir(app: dict[str, str], directory: Path) -> bool:
+    values = [app.get("path", ""), app.get("target_exe", "")]
+    for value in values:
+        if not value:
+            continue
+        try:
+            expand_path(value).relative_to(directory)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
+def scan_install_dirs(prefix: Path, apps: list[dict[str, str]] | None = None) -> list[dict[str, object]]:
+    prefix = expand_path(prefix)
+    apps = apps or scan_apps(prefix)
+    roots = windows_install_roots(prefix) + [prefix / "pfx" / "drive_c" / "ProgramData"]
+    result = []
+    seen = set()
+    for root in roots:
+        if not root.is_dir():
+            continue
+        try:
+            children = sorted((item for item in root.iterdir() if item.is_dir()), key=lambda item: item.name.lower())
+        except OSError:
+            continue
+        for child in children:
+            child = expand_path(child)
+            key = str(child)
+            if key in seen or is_ignored_install_dir(child):
+                continue
+            seen.add(key)
+            exes = scan_exes_in_dir(child, limit=120)
+            linked = sum(1 for app in apps if app_path_under_dir(app, child))
+            if not exes and linked == 0:
+                continue
+            result.append({
+                "name": child.name,
+                "path": child,
+                "prefix": prefix,
+                "exe_count": len(exes),
+                "linked_count": linked,
+                "mtime": child.stat().st_mtime if child.exists() else 0,
+            })
+    return sorted(result, key=lambda item: (-int(item["linked_count"]), -float(item["mtime"]), str(item["name"]).lower()))
+
+
+def can_delete_install_dir(prefix: Path, directory: Path) -> bool:
+    prefix = expand_path(prefix)
+    directory = expand_path(directory)
+    roots = windows_install_roots(prefix) + [prefix / "pfx" / "drive_c" / "ProgramData"]
+    blocked = {
+        prefix,
+        prefix / "pfx",
+        prefix / "pfx" / "drive_c",
+        prefix / "pfx" / "drive_c" / "Program Files",
+        prefix / "pfx" / "drive_c" / "Program Files (x86)",
+        prefix / "pfx" / "drive_c" / "ProgramData",
+        prefix / "pfx" / "drive_c" / "users",
+        prefix / "pfx" / "drive_c" / "windows",
+    }
+    if directory in blocked or directory.is_symlink() or not directory.is_dir():
+        return False
+    for root in roots:
+        root = expand_path(root)
+        try:
+            rel = directory.relative_to(root)
+        except ValueError:
+            continue
+        return bool(rel.parts) and rel.parts[0] not in {"", ".", ".."}
+    return False
 
 
 def under_known_install_root(prefix: Path, path: Path) -> bool:
@@ -1243,13 +1432,16 @@ class ManagerApp(Gtk.Application):
         self.window = None
         self.prefixes: list[Path] = []
         self.apps_prefix_combo = None
+        self.install_dirs_prefix_combo = None
         self.process_prefix_combo = None
         self.prefix_entry = None
         self.stack = None
         self.nav_buttons = {}
         self.apps_list = None
+        self.install_dirs_list = None
         self.process_list = None
         self.apps_signature = None
+        self.install_dirs_signature = None
         self.status_label = None
         self.status_clear_source_id = 0
         self.refresh_source_id = 0
@@ -1301,7 +1493,7 @@ class ManagerApp(Gtk.Application):
         box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         box.add_css_class("top-nav")
         box.set_halign(Gtk.Align.CENTER)
-        for name, label in (("apps", TEXT["library"]), ("processes", TEXT["processes"])):
+        for name, label in (("apps", TEXT["apps"]), ("install_dirs", TEXT["install_dirs"]), ("processes", TEXT["processes"])):
             button = Gtk.Button(label=label)
             button.add_css_class("nav-button")
             button.connect("clicked", lambda _b, page=name: self.set_page(page))
@@ -1322,6 +1514,7 @@ class ManagerApp(Gtk.Application):
     def build_stack(self) -> Gtk.Stack:
         self.stack = Gtk.Stack(hexpand=True, vexpand=True)
         self.stack.add_named(self.apps_page(), "apps")
+        self.stack.add_named(self.install_dirs_page(), "install_dirs")
         self.stack.add_named(self.process_page(), "processes")
         self.set_page("apps")
         return self.stack
@@ -1375,6 +1568,15 @@ class ManagerApp(Gtk.Application):
         actions.append(kill_all)
         return page
 
+    def install_dirs_page(self) -> Gtk.Widget:
+        page, actions, self.install_dirs_list = self.make_page(TEXT["install_dirs"], TEXT["install_dirs_desc"])
+        page.insert_child_after(self.prefix_selector("install_dirs"), page.get_first_child())
+        refresh = Gtk.Button(label=TEXT["refresh"])
+        refresh.add_css_class("compact-button")
+        refresh.connect("clicked", lambda _b: self.refresh_install_dirs(force=True))
+        actions.append(refresh)
+        return page
+
     def prefix_selector(self, page: str) -> Gtk.Box:
         box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         box.add_css_class("prefix-toolbar")
@@ -1402,6 +1604,8 @@ class ManagerApp(Gtk.Application):
             box.append(self.cache_dirs_menu_button())
         if page == "apps":
             self.apps_prefix_combo = combo
+        elif page == "install_dirs":
+            self.install_dirs_prefix_combo = combo
         else:
             self.process_prefix_combo = combo
         return box
@@ -1412,7 +1616,12 @@ class ManagerApp(Gtk.Application):
         return expand_path(text or Path.home() / ".proton")
 
     def page_prefix(self, page: str) -> Path:
-        combo = self.process_prefix_combo if page == "processes" else self.apps_prefix_combo
+        if page == "processes":
+            combo = self.process_prefix_combo
+        elif page == "install_dirs":
+            combo = self.install_dirs_prefix_combo
+        else:
+            combo = self.apps_prefix_combo
         text = combo.get_active_text() if combo else ""
         return expand_path(text or Path.home() / ".proton")
 
@@ -1420,11 +1629,13 @@ class ManagerApp(Gtk.Application):
         visible = self.stack.get_visible_child_name() if self.stack else "apps"
         if visible == "processes":
             return self.process_prefix_combo
+        if visible == "install_dirs":
+            return self.install_dirs_prefix_combo
         return self.apps_prefix_combo
 
     def reload_prefixes(self) -> None:
         self.prefixes = collect_prefixes()
-        for combo in (self.apps_prefix_combo, self.process_prefix_combo):
+        for combo in (self.apps_prefix_combo, self.install_dirs_prefix_combo, self.process_prefix_combo):
             if not combo:
                 continue
             current = combo.get_active_text()
@@ -1440,6 +1651,7 @@ class ManagerApp(Gtk.Application):
         if self.popover_open:
             return
         self.refresh_apps()
+        self.refresh_install_dirs()
         self.refresh_processes()
 
     def auto_refresh(self) -> bool:
@@ -1448,6 +1660,8 @@ class ManagerApp(Gtk.Application):
         visible = self.stack.get_visible_child_name() if self.stack else ""
         if visible == "processes":
             self.refresh_processes()
+        elif visible == "install_dirs":
+            self.refresh_install_dirs()
         elif visible == "apps":
             self.refresh_apps()
         return True
@@ -1765,6 +1979,17 @@ class ManagerApp(Gtk.Application):
             ))
         return (str(prefix), tuple(items))
 
+    def install_dirs_state_signature(self, prefix: Path, dirs: list[dict[str, object]]) -> tuple:
+        items = []
+        for item in dirs:
+            items.append((
+                str(item.get("path", "")),
+                item.get("exe_count", 0),
+                item.get("linked_count", 0),
+                int(float(item.get("mtime", 0))),
+            ))
+        return (str(prefix), tuple(items))
+
     def refresh_apps(self, force: bool = False) -> None:
         prefix = self.page_prefix("apps")
         apps = scan_apps(prefix)
@@ -1804,6 +2029,44 @@ class ManagerApp(Gtk.Application):
             box.append(self.app_menu_button(app))
             row.set_child(box)
             self.apps_list.append(row)
+
+    def refresh_install_dirs(self, force: bool = False) -> None:
+        if not self.install_dirs_list:
+            return
+        prefix = self.page_prefix("install_dirs")
+        apps = scan_apps(prefix)
+        dirs = scan_install_dirs(prefix, apps)
+        signature = self.install_dirs_state_signature(prefix, dirs)
+        if not force and signature == self.install_dirs_signature:
+            return
+        self.install_dirs_signature = signature
+        self.clear_list(self.install_dirs_list)
+        if not dirs:
+            self.install_dirs_list.append(self.empty_row(TEXT["no_install_dirs"]))
+            return
+        for item in dirs:
+            row = Gtk.ListBoxRow()
+            box = self.row_box()
+            path = Path(item["path"])
+            detail = " · ".join([
+                windows_display_path(prefix, path),
+                TEXT["exe_count"].format(count=item.get("exe_count", 0)),
+                TEXT["linked_apps"].format(count=item.get("linked_count", 0)),
+            ])
+            box.append(self.icon_widget("folder-symbolic"))
+            box.append(self.text_column(str(item.get("name", path.name)), detail))
+            view = self.compact_button(TEXT["view_exes"], "run-button")
+            view.connect("clicked", lambda _b, directory=path, item_prefix=prefix: self.show_install_dir_exes(item_prefix, directory))
+            box.append(view)
+            open_dir = self.compact_button(TEXT["open_dir"])
+            open_dir.connect("clicked", lambda _b, directory=path: self.open_folder(directory))
+            box.append(open_dir)
+            delete_dir = self.compact_button(TEXT["delete_dir"], "menu-item-danger")
+            delete_dir.add_css_class("destructive-action")
+            delete_dir.connect("clicked", lambda _b, directory=path, item_prefix=prefix: self.confirm_delete_install_dir(item_prefix, directory))
+            box.append(delete_dir)
+            row.set_child(box)
+            self.install_dirs_list.append(row)
 
     def refresh_processes(self) -> None:
         self.clear_list(self.process_list)
@@ -1846,6 +2109,7 @@ class ManagerApp(Gtk.Application):
     def refresh_after_mutation(self) -> bool:
         self.reload_prefixes()
         self.refresh_apps(force=True)
+        self.refresh_install_dirs(force=True)
         self.refresh_processes()
         return False
 
@@ -1862,7 +2126,102 @@ class ManagerApp(Gtk.Application):
 
     def refresh_apps_once(self) -> bool:
         self.refresh_apps(force=True)
+        self.refresh_install_dirs(force=True)
         return False
+
+    def show_install_dir_exes(self, prefix: Path, directory: Path) -> None:
+        exes = scan_exes_in_dir(directory)
+        dialog = Gtk.Dialog(title=str(directory.name), transient_for=self.window, modal=True)
+        dialog.set_default_size(860, 620)
+        dialog.add_button(TEXT["cancel"], Gtk.ResponseType.CLOSE)
+        content = dialog.get_content_area()
+        content.set_spacing(10)
+        content.set_margin_top(12)
+        content.set_margin_bottom(12)
+        content.set_margin_start(12)
+        content.set_margin_end(12)
+
+        heading = Gtk.Label(label=windows_display_path(prefix, directory), xalign=0, wrap=True)
+        heading.add_css_class("dim-label")
+        content.append(heading)
+
+        list_box = Gtk.ListBox()
+        list_box.set_selection_mode(Gtk.SelectionMode.NONE)
+        scrolled = Gtk.ScrolledWindow(hexpand=True, vexpand=True)
+        scrolled.set_child(list_box)
+        content.append(scrolled)
+
+        if not exes:
+            list_box.append(self.empty_row(TEXT["no_apps"]))
+        else:
+            for exe in exes:
+                row = Gtk.ListBoxRow()
+                box = self.row_box()
+                app = {"path": str(exe["path"]), "name": Path(exe["path"]).stem}
+                box.append(self.icon_widget(icon_for_app(prefix, app)))
+                title = str(exe["name"])
+                box.append(self.text_column(title, str(exe.get("detail", ""))))
+                add = self.compact_button(TEXT["add_app"], "run-button")
+                add.connect("clicked", lambda _b, exe_path=str(exe["path"]), d=dialog, item_prefix=prefix: self.add_exe_from_install_dir(d, item_prefix, exe_path))
+                box.append(add)
+                run = self.compact_button(TEXT["run"])
+                run.connect("clicked", lambda _b, exe_path=str(exe["path"]), item_prefix=prefix: self.run_path(exe_path, str(item_prefix), ""))
+                box.append(run)
+                row.set_child(box)
+                list_box.append(row)
+        dialog.connect("response", lambda d, _response: d.destroy())
+        dialog.present()
+
+    def add_exe_from_install_dir(self, dialog: Gtk.Dialog, prefix: Path, exe_path: str) -> None:
+        runners = load_runners(self.wrapper)
+        entry = {
+            "name": inferred_exe_name(expand_path(exe_path), prefix),
+            "exe": exe_path,
+            "prefix": str(prefix),
+            "runner": runners[0]["path"] if runners else "",
+            "gamescope": "0",
+            "gamescope_fullscreen": "0",
+            "gamescope_res": "",
+            "gamescope_fps": "",
+            "gamescope_fsr": "0",
+            "gamescope_args": "",
+            "mangohud": "0",
+            "env_vars": "",
+            "source": "install-dir",
+        }
+        dialog.destroy()
+        self.edit_cache_entry(entry)
+
+    def confirm_delete_install_dir(self, prefix: Path, directory: Path) -> None:
+        if not can_delete_install_dir(prefix, directory):
+            display_message(self.window, TEXT["delete_dir_title"], TEXT["delete_dir_blocked"])
+            return
+        dialog = Gtk.MessageDialog(
+            transient_for=self.window,
+            modal=True,
+            message_type=Gtk.MessageType.WARNING,
+            buttons=Gtk.ButtonsType.OK_CANCEL,
+            text=TEXT["delete_dir_title"],
+            secondary_text=TEXT["delete_dir_confirm"].format(path=windows_display_path(prefix, directory)),
+        )
+        dialog.get_widget_for_response(Gtk.ResponseType.OK).add_css_class("destructive-action")
+        dialog.connect("response", lambda d, response, item_prefix=prefix, path=directory: self.on_delete_install_dir_response(d, response, item_prefix, path))
+        dialog.present()
+
+    def on_delete_install_dir_response(self, dialog: Gtk.MessageDialog, response: int, prefix: Path, directory: Path) -> None:
+        dialog.destroy()
+        if response != Gtk.ResponseType.OK:
+            return
+        if not can_delete_install_dir(prefix, directory):
+            display_message(self.window, TEXT["delete_dir_title"], TEXT["delete_dir_blocked"])
+            return
+        try:
+            shutil.rmtree(directory)
+        except OSError as exc:
+            display_message(self.window, TEXT["error"], str(exc))
+            return
+        self.set_status(f"{TEXT['removed']}: {directory}")
+        self.refresh_after_mutation()
 
     def close_running_app(self, app_id: str) -> None:
         killed = 0
@@ -2170,7 +2529,7 @@ class ManagerApp(Gtk.Application):
                 path = Path(file.get_path())
                 if str(path) not in [str(item) for item in self.prefixes]:
                     self.prefixes.append(path)
-                    for selector in (self.apps_prefix_combo, self.process_prefix_combo):
+                    for selector in (self.apps_prefix_combo, self.install_dirs_prefix_combo, self.process_prefix_combo):
                         if selector:
                             selector.append_text(str(path))
                 combo.set_active(len(self.prefixes) - 1)
