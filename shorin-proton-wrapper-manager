@@ -107,6 +107,11 @@ TEXT = {
     "delete_dir_title": "删除安装目录" if ZH else "Delete Install Folder",
     "delete_dir_confirm": "将永久删除以下目录及其中所有文件：\n\n{path}\n\n这不会运行 Windows 卸载程序，可能留下注册表、快捷方式和配置残留。是否继续？" if ZH else "This will permanently delete this folder and all files inside:\n\n{path}\n\nThis will not run the Windows uninstaller and may leave registry entries, shortcuts, and config files behind. Continue?",
     "delete_dir_blocked": "出于安全原因，不能删除此目录。" if ZH else "This folder cannot be deleted for safety reasons.",
+    "delete_prefix": "删除前置环境" if ZH else "Delete Prefix",
+    "delete_prefix_title": "删除前置环境" if ZH else "Delete Prefix",
+    "delete_prefix_confirm": "将永久删除以下前置环境及其中所有文件：\n\n{path}\n\n请确认该前置环境内没有需要保留的存档、配置或用户数据。是否继续？" if ZH else "This will permanently delete this prefix and all files inside:\n\n{path}\n\nMake sure there are no saves, settings, or user data you want to keep. Continue?",
+    "delete_prefix_blocked": "出于安全原因，不能删除此前置环境。" if ZH else "This prefix cannot be deleted for safety reasons.",
+    "delete_prefix_running": "此前置环境仍有运行中的进程，请先关闭。" if ZH else "This prefix still has running processes. Close them first.",
     "recommended_exes": "推荐入口" if ZH else "Recommended Entries",
     "other_exes": "其他可执行文件" if ZH else "Other Executables",
     "exe_count": "{count} 个 exe" if ZH else "{count} exe files",
@@ -197,6 +202,189 @@ def collect_prefixes() -> list[Path]:
         seen.add(key)
         result.append(prefix)
     return result
+
+
+def looks_like_wine_prefix(path: Path) -> bool:
+    return (
+        path.is_dir()
+        and (path / "drive_c").is_dir()
+        and any((path / name).exists() for name in ("system.reg", "user.reg", "dosdevices"))
+    )
+
+
+def looks_like_compat_prefix(path: Path) -> bool:
+    return looks_like_wine_prefix(path / "pfx")
+
+
+def is_steam_zero_prefix(path: Path) -> bool:
+    path = expand_path(path)
+    return path.name == "0" and path.parent.name == "compatdata" and path.parent.parent.name == "steamapps"
+
+
+def add_unique_path(values: list[Path], seen: set[str], path: str | Path) -> None:
+    prefix = expand_path(path)
+    if is_steam_zero_prefix(prefix):
+        return
+    key = str(prefix)
+    if key in seen:
+        return
+    seen.add(key)
+    values.append(prefix)
+
+
+def prefix_mtime(prefix: Path) -> float:
+    try:
+        if looks_like_compat_prefix(prefix):
+            return (prefix / "pfx").stat().st_mtime
+        return prefix.stat().st_mtime
+    except OSError:
+        return 0
+
+
+def process_prefix_from_wineprefix(wineprefix: str) -> Path | None:
+    if not wineprefix:
+        return None
+    path = expand_path(wineprefix)
+    if path.name == "pfx" and looks_like_wine_prefix(path):
+        return path.parent
+    if looks_like_wine_prefix(path):
+        return path
+    return None
+
+
+def collect_running_process_prefixes() -> list[Path]:
+    counts: dict[str, tuple[Path, int]] = {}
+    for proc in Path("/proc").iterdir():
+        if not proc.name.isdigit():
+            continue
+        try:
+            environ = (proc / "environ").read_bytes().split(b"\0")
+        except OSError:
+            continue
+        env = {}
+        for item in environ:
+            if b"=" not in item:
+                continue
+            key, value = item.split(b"=", 1)
+            env[key.decode(errors="replace")] = value.decode(errors="replace")
+        wine_prefix = process_prefix_from_wineprefix(env.get("WINEPREFIX", ""))
+        if wine_prefix and not is_steam_zero_prefix(wine_prefix):
+            key = str(wine_prefix)
+            counts[key] = (wine_prefix, counts.get(key, (wine_prefix, 0))[1] + 1)
+        steam_data = env.get("STEAM_COMPAT_DATA_PATH", "")
+        if steam_data and looks_like_compat_prefix(expand_path(steam_data)):
+            prefix = expand_path(steam_data)
+            if not is_steam_zero_prefix(prefix):
+                key = str(prefix)
+                counts[key] = (prefix, counts.get(key, (prefix, 0))[1] + 1)
+        wrapper_prefix = env.get("SHORIN_PROTON_WRAPPER_PREFIX", "")
+        if wrapper_prefix:
+            prefix = expand_path(wrapper_prefix)
+            key = str(prefix)
+            counts[key] = (prefix, counts.get(key, (prefix, 0))[1] + 1)
+    return [prefix for prefix, _count in sorted(counts.values(), key=lambda item: (-item[1], str(item[0])))]
+
+
+def collect_common_prefixes() -> list[Path]:
+    home = Path.home()
+    patterns = [
+        home / ".wine",
+        home / ".local/share/Steam/steamapps/compatdata/*",
+        home / ".steam/steam/steamapps/compatdata/*",
+        home / ".var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/compatdata/*",
+        home / "Games/*",
+        home / "games/*",
+        home / "Applications/*",
+        home / "Wine/*",
+        home / "wine/*",
+        home / "Prefixes/*",
+        home / "prefixes/*",
+        home / ".local/share/lutris/prefixes/*",
+        home / ".local/share/bottles/bottles/*",
+        home / ".var/app/com.usebottles.bottles/data/bottles/bottles/*",
+        home / "Games/Heroic/*",
+        home / "Games/legendary/*",
+        home / "Games/epic/*",
+    ]
+    values: list[Path] = []
+    seen: set[str] = set()
+    for pattern in patterns:
+        for path in pattern.parent.glob(pattern.name):
+            if looks_like_compat_prefix(path) or looks_like_wine_prefix(path):
+                add_unique_path(values, seen, path)
+    return sorted(values, key=lambda prefix: (-prefix_mtime(prefix), str(prefix)))
+
+
+def collect_process_prefixes() -> list[Path]:
+    values: list[Path] = []
+    seen: set[str] = set()
+    for group in (collect_running_process_prefixes(), collect_prefixes(), collect_common_prefixes()):
+        for prefix in group:
+            add_unique_path(values, seen, prefix)
+    return values
+
+
+def parse_steam_manifest_value(line: str, key: str) -> str:
+    parts = line.strip().split('"')
+    if len(parts) >= 4 and parts[1] == key:
+        return parts[3]
+    return ""
+
+
+def steam_app_names() -> dict[str, str]:
+    home = Path.home()
+    steamapps_dirs = [
+        home / ".local/share/Steam/steamapps",
+        home / ".var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps",
+    ]
+    names: dict[str, str] = {}
+    for steamapps in steamapps_dirs:
+        if not steamapps.is_dir():
+            continue
+        for manifest in steamapps.glob("appmanifest_*.acf"):
+            appid = manifest.stem.removeprefix("appmanifest_")
+            name = ""
+            try:
+                for line in manifest.read_text(errors="ignore").splitlines():
+                    name = parse_steam_manifest_value(line, "name")
+                    if name:
+                        break
+            except OSError:
+                continue
+            if appid and name:
+                names[appid] = name
+    return names
+
+
+def steam_app_id_for_prefix(prefix: Path) -> str:
+    prefix = expand_path(prefix)
+    if prefix.name.isdigit() and prefix.parent.name == "compatdata" and prefix.parent.parent.name == "steamapps":
+        return prefix.name
+    return ""
+
+
+def process_prefix_label(prefix: Path, app_names: dict[str, str]) -> str:
+    appid = steam_app_id_for_prefix(prefix)
+    if appid:
+        name = app_names.get(appid, "")
+        if name:
+            return f"{name} · Steam"
+        return f"Steam"
+    return str(prefix)
+
+
+def unique_process_prefix_labels(prefixes: list[Path]) -> list[tuple[str, Path]]:
+    app_names = steam_app_names()
+    counts: dict[str, int] = {}
+    labels = []
+    for prefix in prefixes:
+        label = process_prefix_label(prefix, app_names)
+        labels.append((label, prefix))
+        counts[label] = counts.get(label, 0) + 1
+    return [
+        (f"{label} · {prefix}" if counts[label] > 1 else label, prefix)
+        for label, prefix in labels
+    ]
 
 
 def cache_file_for_path(exe: str | Path) -> Path:
@@ -512,6 +700,31 @@ def can_delete_install_dir(prefix: Path, directory: Path) -> bool:
             continue
         return bool(rel.parts) and rel.parts[0] not in {"", ".", ".."}
     return False
+
+
+def can_delete_prefix(prefix: Path) -> bool:
+    prefix = expand_path(prefix)
+    home = expand_path(Path.home())
+    blocked = {
+        home,
+        home / ".local",
+        home / ".local/share",
+        home / ".local/share/Steam",
+        home / ".local/share/Steam/steamapps",
+        home / ".local/share/Steam/steamapps/compatdata",
+        home / ".steam",
+        home / ".steam/steam",
+        home / ".steam/steam/steamapps",
+        home / ".steam/steam/steamapps/compatdata",
+        home / ".var",
+        home / ".var/app",
+        home / ".var/app/com.valvesoftware.Steam",
+        home / ".var/app/com.valvesoftware.Steam/.local/share/Steam",
+        home / ".var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps",
+        home / ".var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/compatdata",
+        Path("/"),
+    }
+    return prefix.is_dir() and not prefix.is_symlink() and prefix not in blocked and (looks_like_compat_prefix(prefix) or looks_like_wine_prefix(prefix))
 
 
 def under_known_install_root(prefix: Path, path: Path) -> bool:
@@ -955,6 +1168,11 @@ def install_css() -> None:
 .prefix-label {
   color: alpha(@theme_fg_color, 0.72);
 }
+.prefix-path-label {
+  color: alpha(@theme_fg_color, 0.5);
+  font-size: 0.85em;
+  margin-start: 0;
+}
 entry:focus,
 entry:focus-within {
   outline-color: alpha(@theme_fg_color, 0.28);
@@ -1324,7 +1542,11 @@ def process_start_time(pid: int) -> str:
 
 def scan_processes(prefix: Path) -> list[dict[str, str]]:
     prefix = expand_path(prefix)
-    wineprefix = str(prefix / "pfx")
+    wineprefixes = []
+    if looks_like_compat_prefix(prefix) or not looks_like_wine_prefix(prefix):
+        wineprefixes.append(str(prefix / "pfx"))
+    if looks_like_wine_prefix(prefix):
+        wineprefixes.append(str(prefix))
     steam_data = str(prefix)
     result = []
     for proc in Path("/proc").iterdir():
@@ -1343,8 +1565,10 @@ def scan_processes(prefix: Path) -> list[dict[str, str]]:
             if b"=" in item:
                 key, value = item.split(b"=", 1)
                 env[key.decode(errors="replace")] = value.decode(errors="replace")
-            if item == f"WINEPREFIX={wineprefix}".encode() or item == f"STEAM_COMPAT_DATA_PATH={steam_data}".encode():
-                matched = True
+        if env.get("WINEPREFIX", "") in wineprefixes:
+            matched = True
+        if env.get("STEAM_COMPAT_DATA_PATH", "") == steam_data:
+            matched = True
         if env.get("SHORIN_PROTON_WRAPPER_PREFIX") == str(prefix):
             matched = True
         if not matched:
@@ -1434,6 +1658,8 @@ class ManagerApp(Gtk.Application):
         self.apps_prefix_combo = None
         self.install_dirs_prefix_combo = None
         self.process_prefix_combo = None
+        self.process_prefix_display_paths: dict[str, Path] = {}
+        self.process_path_label = None
         self.prefix_entry = None
         self.stack = None
         self.nav_buttons = {}
@@ -1562,6 +1788,10 @@ class ManagerApp(Gtk.Application):
     def process_page(self) -> Gtk.Widget:
         page, actions, self.process_list = self.make_page(TEXT["processes"], TEXT["processes_desc"])
         page.insert_child_after(self.prefix_selector("processes"), page.get_first_child())
+        refresh = Gtk.Button(label=TEXT["refresh"])
+        refresh.add_css_class("compact-button")
+        refresh.connect("clicked", lambda _b: self.refresh_process_page())
+        actions.append(refresh)
         kill_all = Gtk.Button(label=TEXT["kill_all"])
         kill_all.add_css_class("destructive-action")
         kill_all.connect("clicked", self.on_kill_all_processes)
@@ -1577,14 +1807,15 @@ class ManagerApp(Gtk.Application):
         actions.append(refresh)
         return page
 
-    def prefix_selector(self, page: str) -> Gtk.Box:
+    def prefix_selector(self, page: str) -> Gtk.Widget:
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         box.add_css_class("prefix-toolbar")
         label = Gtk.Label(label=TEXT["prefix"], xalign=0)
         label.add_css_class("prefix-label")
         combo = Gtk.ComboBoxText()
         combo.set_hexpand(True)
-        combo.connect("changed", lambda _combo: self.refresh_all())
+        combo.connect("changed", self.on_prefix_combo_changed)
         browse = Gtk.Button(label=TEXT["browse"])
         browse.connect("clicked", lambda _b, selector=combo: self.browse_prefix(selector))
         open_prefix = Gtk.Button(label="")
@@ -1594,25 +1825,64 @@ class ManagerApp(Gtk.Application):
         open_prefix.set_valign(Gtk.Align.CENTER)
         open_prefix.set_tooltip_text(TEXT["open_prefix"])
         open_prefix.connect("clicked", lambda _b, selector_page=page: self.open_folder(self.page_prefix(selector_page)))
+        delete_prefix = Gtk.Button(label="")
+        delete_prefix.add_css_class("compact-button")
+        delete_prefix.add_css_class("icon-button")
+        delete_prefix.add_css_class("destructive-action")
+        delete_prefix.set_size_request(34, 34)
+        delete_prefix.set_valign(Gtk.Align.CENTER)
+        delete_prefix.set_tooltip_text(TEXT["delete_prefix"])
+        delete_prefix.connect("clicked", lambda _b, selector_page=page: self.confirm_delete_prefix(self.page_prefix(selector_page)))
         box.append(label)
         box.append(combo)
         box.append(browse)
         box.append(open_prefix)
+        box.append(delete_prefix)
         if page == "apps":
             self.update_button = self.create_update_button()
             box.append(self.update_button)
             box.append(self.cache_dirs_menu_button())
+        path_label = None
+        if page == "processes":
+            path_label = Gtk.Label(xalign=0)
+            path_label.add_css_class("prefix-path-label")
+            path_label.set_margin_start(0)
+        outer.append(box)
+        if path_label:
+            outer.append(path_label)
         if page == "apps":
             self.apps_prefix_combo = combo
         elif page == "install_dirs":
             self.install_dirs_prefix_combo = combo
         else:
             self.process_prefix_combo = combo
-        return box
+            self.process_path_label = path_label
+        self.update_prefix_path_label(combo, page)
+        return outer
+
+    def update_prefix_path_label(self, combo: Gtk.ComboBoxText, page: str) -> None:
+        if page != "processes" or not getattr(self, "process_path_label", None):
+            return
+        text = combo.get_active_text() or ""
+        prefix = self.process_prefix_display_paths.get(text)
+        if prefix and text != str(prefix):
+            self.process_path_label.set_text(str(prefix))
+            self.process_path_label.set_visible(True)
+        else:
+            self.process_path_label.set_text("")
+            self.process_path_label.set_visible(False)
+
+    def on_prefix_combo_changed(self, combo: Gtk.ComboBoxText) -> None:
+        visible = self.stack.get_visible_child_name() if self.stack else "apps"
+        self.update_prefix_path_label(combo, "processes" if visible == "processes" else visible)
+        self.refresh_all()
 
     def current_prefix(self) -> Path:
         combo = self.current_prefix_combo()
         text = combo.get_active_text() if combo else ""
+        visible = self.stack.get_visible_child_name() if self.stack else "apps"
+        if visible == "processes" and text in self.process_prefix_display_paths:
+            return self.process_prefix_display_paths[text]
         return expand_path(text or Path.home() / ".proton")
 
     def page_prefix(self, page: str) -> Path:
@@ -1623,6 +1893,8 @@ class ManagerApp(Gtk.Application):
         else:
             combo = self.apps_prefix_combo
         text = combo.get_active_text() if combo else ""
+        if page == "processes" and text in self.process_prefix_display_paths:
+            return self.process_prefix_display_paths[text]
         return expand_path(text or Path.home() / ".proton")
 
     def current_prefix_combo(self) -> Gtk.ComboBoxText | None:
@@ -1635,23 +1907,38 @@ class ManagerApp(Gtk.Application):
 
     def reload_prefixes(self) -> None:
         self.prefixes = collect_prefixes()
-        for combo in (self.apps_prefix_combo, self.install_dirs_prefix_combo, self.process_prefix_combo):
+        process_prefixes = collect_process_prefixes()
+        process_labels = unique_process_prefix_labels(process_prefixes)
+        old_process_display_paths = self.process_prefix_display_paths
+        self.process_prefix_display_paths = {label: prefix for label, prefix in process_labels}
+        for combo, entries in (
+            (self.apps_prefix_combo, [(str(prefix), prefix) for prefix in self.prefixes]),
+            (self.install_dirs_prefix_combo, [(str(prefix), prefix) for prefix in self.prefixes]),
+            (self.process_prefix_combo, process_labels),
+        ):
             if not combo:
                 continue
             current = combo.get_active_text()
+            current_prefix = old_process_display_paths.get(current) if combo == self.process_prefix_combo else None
             combo.remove_all()
             active_index = 0
-            for index, prefix in enumerate(self.prefixes):
-                combo.append_text(str(prefix))
-                if str(prefix) == current:
+            for index, (label, prefix) in enumerate(entries):
+                combo.append_text(label)
+                if label == current or (current_prefix and prefix == current_prefix):
                     active_index = index
             combo.set_active(active_index)
+            if combo == self.process_prefix_combo:
+                self.update_prefix_path_label(combo, "processes")
 
     def refresh_all(self) -> None:
         if self.popover_open:
             return
         self.refresh_apps()
         self.refresh_install_dirs()
+        self.refresh_processes()
+
+    def refresh_process_page(self) -> None:
+        self.reload_prefixes()
         self.refresh_processes()
 
     def auto_refresh(self) -> bool:
@@ -2221,6 +2508,44 @@ class ManagerApp(Gtk.Application):
             display_message(self.window, TEXT["error"], str(exc))
             return
         self.set_status(f"{TEXT['removed']}: {directory}")
+        self.refresh_after_mutation()
+
+    def confirm_delete_prefix(self, prefix: Path) -> None:
+        prefix = expand_path(prefix)
+        if scan_processes(prefix):
+            display_message(self.window, TEXT["delete_prefix_title"], TEXT["delete_prefix_running"])
+            return
+        if not can_delete_prefix(prefix):
+            display_message(self.window, TEXT["delete_prefix_title"], TEXT["delete_prefix_blocked"])
+            return
+        dialog = Gtk.MessageDialog(
+            transient_for=self.window,
+            modal=True,
+            message_type=Gtk.MessageType.WARNING,
+            buttons=Gtk.ButtonsType.OK_CANCEL,
+            text=TEXT["delete_prefix_title"],
+            secondary_text=TEXT["delete_prefix_confirm"].format(path=str(prefix)),
+        )
+        dialog.get_widget_for_response(Gtk.ResponseType.OK).add_css_class("destructive-action")
+        dialog.connect("response", lambda d, response, item_prefix=prefix: self.on_delete_prefix_response(d, response, item_prefix))
+        dialog.present()
+
+    def on_delete_prefix_response(self, dialog: Gtk.MessageDialog, response: int, prefix: Path) -> None:
+        dialog.destroy()
+        if response != Gtk.ResponseType.OK:
+            return
+        if scan_processes(prefix):
+            display_message(self.window, TEXT["delete_prefix_title"], TEXT["delete_prefix_running"])
+            return
+        if not can_delete_prefix(prefix):
+            display_message(self.window, TEXT["delete_prefix_title"], TEXT["delete_prefix_blocked"])
+            return
+        try:
+            shutil.rmtree(prefix)
+        except OSError as exc:
+            display_message(self.window, TEXT["error"], str(exc))
+            return
+        self.set_status(f"{TEXT['removed']}: {prefix}")
         self.refresh_after_mutation()
 
     def close_running_app(self, app_id: str) -> None:
