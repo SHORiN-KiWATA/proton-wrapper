@@ -583,14 +583,21 @@ collect_runners() {
   shopt -s nullglob
   add_proton_paths local "$LOCAL_RUNNER_DIR"/*/proton
 
-  add_proton_paths steam-compat \
+  add_proton_paths steam \
     "$HOME/.local/share/Steam/compatibilitytools.d/DW-Proton Latest/proton" \
     "$HOME/.steam/root/compatibilitytools.d/DW-Proton Latest/proton" \
     "$HOME/.local/share/Steam/compatibilitytools.d/Proton-GE Latest/proton" \
     "$HOME/.steam/root/compatibilitytools.d/Proton-GE Latest/proton"
-  add_proton_paths steam-compat \
+  add_proton_paths steam \
     "$HOME/.local/share/Steam/compatibilitytools.d"/*/proton \
     "$HOME/.steam/root/compatibilitytools.d"/*/proton
+
+  add_proton_paths steam-system \
+    "/usr/share/steam/compatibilitytools.d"/*/proton \
+    "/usr/lib/steam/compatibilitytools.d"/*/proton
+
+  add_proton_paths steam-flatpak \
+    "$HOME/.var/app/com.valvesoftware.Steam/data/Steam/compatibilitytools.d"/*/proton
 
   add_proton_paths lutris \
     "$HOME/.local/share/lutris/runners/proton"/*/proton \
@@ -812,6 +819,9 @@ try_resolve_runner_product() {
     "$LOCAL_RUNNER_DIR/$name/proton" \
     "$HOME/.local/share/Steam/compatibilitytools.d/$name/proton" \
     "$HOME/.steam/root/compatibilitytools.d/$name/proton" \
+    "/usr/share/steam/compatibilitytools.d/$name/proton" \
+    "/usr/lib/steam/compatibilitytools.d/$name/proton" \
+    "$HOME/.var/app/com.valvesoftware.Steam/data/Steam/compatibilitytools.d/$name/proton" \
     "$HOME/.local/share/lutris/runners/proton/$name/proton" \
     "$HOME/.local/share/lutris/runners/wine/$name/proton" \
     "$HOME/.var/app/net.lutris.Lutris/data/lutris/runners/proton/$name/proton" \
