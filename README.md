@@ -65,7 +65,7 @@ shorin-proton-wrapper
   --remove ge|dw          移除默认位置中已安装的运行器
   --remove-steam ge|dw    移除 Steam 中指定运行器，省略 ge|dw 则移除全部由 wrapper 安装的运行器
   --remove-lutris ge|dw   移除 Lutris 中指定运行器，省略 ge|dw 则移除全部由 wrapper 安装的运行器
-  --gs, --gamescope       用 Gamescope 运行。默认窗口化；需要自定义分辨率、帧率、FSR 或遇到显示兼容问题时使用
+  --gs, --gamescope       用 Gamescope 运行。默认全屏；需要自定义分辨率、帧率、FSR 或遇到显示兼容问题时使用
   --mangohud              启用 MangoHud 性能叠加层
   --debug                 将完整调试日志写入 ~/.cache/shorin-proton-wrapper/logs
   --help-full             显示完整说明
@@ -91,8 +91,8 @@ shorin-proton-wrapper --gamescope
   shorin-proton-wrapper --gamescope [Gamescope 选项] app.exe [参数...]
 
 Gamescope 选项:
-  --windowed             窗口模式 (默认)
-  --fullscreen           全屏模式
+  --windowed             窗口模式
+  --fullscreen           全屏模式 (默认)
   --res 宽x高            设置游戏渲染分辨率，例如 1920x1080
   --fps 帧率             限制帧率
   --fsr                  启用 FSR 超分辨率

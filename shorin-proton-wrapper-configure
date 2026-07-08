@@ -319,7 +319,7 @@ def read_cache(path: Path):
             "prefix": prefix,
             "runner": runner,
             "gamescope": data.get("gamescope", "0"),
-            "gamescope_fullscreen": data.get("gamescope_fullscreen", "0"),
+            "gamescope_fullscreen": data.get("gamescope_fullscreen", "1"),
             "gamescope_res": data.get("gamescope_res", ""),
             "gamescope_fps": data.get("gamescope_fps", ""),
             "gamescope_fsr": data.get("gamescope_fsr", "0"),
@@ -336,7 +336,7 @@ def write_cache(path: Path, exe: Path, prefix: str, runner: str, options: dict):
         f"prefix={prefix}\n"
         f"runner={runner}\n"
         f"gamescope={options.get('gamescope', '0')}\n"
-        f"gamescope_fullscreen={options.get('gamescope_fullscreen', '0')}\n"
+        f"gamescope_fullscreen={options.get('gamescope_fullscreen', '1')}\n"
         f"gamescope_res={options.get('gamescope_res', '')}\n"
         f"gamescope_fps={options.get('gamescope_fps', '')}\n"
         f"gamescope_fsr={options.get('gamescope_fsr', '0')}\n"
@@ -429,7 +429,7 @@ def gamescope_args(options: dict) -> list[str]:
         pass
     else:
         args.append("--gamescope")
-        if options.get("gamescope_fullscreen", "0") == "1":
+        if options.get("gamescope_fullscreen", "1") == "1":
             args.append("--fullscreen")
         if options.get("gamescope_res"):
             args.extend(["--res", options["gamescope_res"]])
@@ -449,7 +449,7 @@ def gamescope_summary(options: dict) -> str:
     if options.get("gamescope") != "1":
         return "Gamescope: " + ("关闭" if ZH else "off") + suffix
     parts = ["Gamescope"]
-    parts.append("全屏" if options.get("gamescope_fullscreen", "0") == "1" and ZH else "fullscreen" if options.get("gamescope_fullscreen", "0") == "1" else "窗口" if ZH else "windowed")
+    parts.append("全屏" if options.get("gamescope_fullscreen", "1") == "1" and ZH else "fullscreen" if options.get("gamescope_fullscreen", "1") == "1" else "窗口" if ZH else "windowed")
     if options.get("gamescope_res"):
         parts.append(options["gamescope_res"])
     if options.get("gamescope_fps"):
@@ -747,7 +747,7 @@ class SelectorApp(Gtk.Application):
         gamescope_box.attach(self.gamescope_check, 0, 0, 1, 1)
 
         self.fullscreen_check = Gtk.CheckButton(label=TEXT["fullscreen"])
-        self.fullscreen_check.set_active((initial or {}).get("gamescope_fullscreen", "0") == "1")
+        self.fullscreen_check.set_active((initial or {}).get("gamescope_fullscreen", "1") == "1")
         gamescope_box.attach(self.fullscreen_check, 0, 1, 1, 1)
 
         res_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)

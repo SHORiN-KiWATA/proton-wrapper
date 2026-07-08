@@ -774,7 +774,7 @@ def app_cache_entry(prefix: Path, app: dict[str, str]) -> dict[str, str]:
         "prefix": app.get("prefix", str(prefix)),
         "runner": app.get("runner", ""),
         "gamescope": app.get("gamescope", "0"),
-        "gamescope_fullscreen": app.get("gamescope_fullscreen", "0"),
+        "gamescope_fullscreen": app.get("gamescope_fullscreen", "1"),
         "gamescope_res": app.get("gamescope_res", ""),
         "gamescope_fps": app.get("gamescope_fps", ""),
         "gamescope_fsr": app.get("gamescope_fsr", "0"),
@@ -1371,7 +1371,7 @@ def scan_apps(prefix: Path) -> list[dict[str, str]]:
             "prefix": entry.get("prefix", str(prefix)),
             "file": entry.get("file", ""),
             "gamescope": entry.get("gamescope", "0"),
-            "gamescope_fullscreen": entry.get("gamescope_fullscreen", "0"),
+            "gamescope_fullscreen": entry.get("gamescope_fullscreen", "1"),
             "gamescope_res": entry.get("gamescope_res", ""),
             "gamescope_fps": entry.get("gamescope_fps", ""),
             "gamescope_fsr": entry.get("gamescope_fsr", "0"),
@@ -2467,7 +2467,7 @@ class ManagerApp(Gtk.Application):
             "prefix": str(prefix),
             "runner": runners[0]["path"] if runners else "",
             "gamescope": "0",
-            "gamescope_fullscreen": "0",
+            "gamescope_fullscreen": "1",
             "gamescope_res": "",
             "gamescope_fps": "",
             "gamescope_fsr": "0",
@@ -2616,7 +2616,7 @@ class ManagerApp(Gtk.Application):
             "prefix": str(self.page_prefix("apps")),
             "runner": runners[0]["path"] if runners else "",
             "gamescope": "0",
-            "gamescope_fullscreen": "0",
+            "gamescope_fullscreen": "1",
             "gamescope_res": "",
             "gamescope_fps": "",
             "gamescope_fsr": "0",
@@ -2702,7 +2702,7 @@ class ManagerApp(Gtk.Application):
         gamescope = Gtk.CheckButton(label=TEXT["use_gamescope"])
         gamescope.set_active(entry.get("gamescope", "0") == "1")
         fullscreen = Gtk.CheckButton(label=TEXT["fullscreen"])
-        fullscreen.set_active(entry.get("gamescope_fullscreen", "0") == "1")
+        fullscreen.set_active(entry.get("gamescope_fullscreen", "1") == "1")
         fsr = Gtk.CheckButton(label="FSR")
         fsr.set_active(entry.get("gamescope_fsr", "0") == "1")
         checks = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
