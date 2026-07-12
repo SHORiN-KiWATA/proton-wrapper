@@ -1731,7 +1731,7 @@ EOF
 
 apply_cached_association() {
   local target_path="$1" cache_dir key cache_file line name value
-  local cache_prefix="" cache_runner="" cache_gamescope="0" cache_fullscreen="1"
+  local cache_prefix="" cache_runner="" cache_runner_valid="0" cache_gamescope="0" cache_fullscreen="1"
   local cache_res="" cache_fps="" cache_fsr="0" cache_args="" cache_mangohud="0" cache_env_vars=""
 
   cache_file="$(association_cache_file_for "$target_path")"
@@ -1756,7 +1756,9 @@ apply_cached_association() {
   done < "$cache_file"
 
   [[ -n "$cache_prefix" && -d "$cache_prefix" ]] || return 0
-  [[ -n "$cache_runner" && -x "$cache_runner" ]] || return 0
+  if [[ -n "$cache_runner" && -x "$cache_runner" ]] && runner_arch_matches_host "$cache_runner"; then
+    cache_runner_valid="1"
+  fi
   [[ "$cache_gamescope" == "1" ]] || cache_gamescope="0"
   [[ "$cache_fullscreen" == "0" ]] || cache_fullscreen="1"
   [[ "$cache_fsr" == "1" ]] || cache_fsr="0"
@@ -1766,7 +1768,13 @@ apply_cached_association() {
     PREFIX="$cache_prefix"
   fi
   if [[ $RUNNER_EXPLICIT -eq 0 ]]; then
-    RUNNER_ARG="$cache_runner"
+    if [[ "$cache_runner_valid" == "1" ]]; then
+      RUNNER_ARG="$cache_runner"
+    elif [[ "${cache_runner,,}" == *proton-ge* || "${cache_runner,,}" == *ge-proton* ]]; then
+      RUNNER_ARG="ge"
+    elif [[ "${cache_runner,,}" == *dw-proton* || "${cache_runner,,}" == *dwproton* ]]; then
+      RUNNER_ARG="dw"
+    fi
   fi
   if [[ $GAMESCOPE_EXPLICIT -eq 0 ]]; then
     GAMESCOPE="$cache_gamescope"

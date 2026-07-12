@@ -2413,8 +2413,12 @@ class ManagerApp(Gtk.Application):
         if not path:
             return
         command = [self.wrapper, "-p", prefix or str(self.current_prefix())]
-        if runner:
+        if runner and Path(runner).is_file() and os.access(runner, os.X_OK):
             command.extend(["--runner", runner])
+        elif "proton-ge" in runner.lower() or "ge-proton" in runner.lower():
+            command.extend(["--runner", "ge"])
+        elif "dw-proton" in runner.lower() or "dwproton" in runner.lower():
+            command.extend(["--runner", "dw"])
         command.append(path)
         subprocess.Popen(command)
         self.set_status(f"{TEXT['run']}: {path}")
@@ -2725,6 +2729,9 @@ class ManagerApp(Gtk.Application):
 
         def update_gamescope_sensitivity(_button=None):
             active = gamescope.get_active()
+            fullscreen.set_sensitive(active)
+            if not active:
+                fullscreen.set_active(True)
             for widget in gamescope_controls:
                 widget.set_sensitive(active)
 
