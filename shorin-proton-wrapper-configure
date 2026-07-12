@@ -954,7 +954,7 @@ class SelectorApp(Gtk.Application):
 
     def on_gamescope_toggled(self, button):
         active = button.get_active()
-        for widget in (self.fullscreen_check, self.res_combo, self.custom_res_entry, self.fps_combo, self.custom_fps_entry, self.fsr_check, self.extra_args_entry):
+        for widget in (self.res_combo, self.custom_res_entry, self.fps_combo, self.custom_fps_entry, self.fsr_check, self.extra_args_entry):
             if widget:
                 widget.set_sensitive(active)
         self.on_display_option_changed(None)

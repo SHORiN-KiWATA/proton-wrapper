@@ -506,6 +506,62 @@ wine_root_has_proton() {
   [[ -x "$root/proton" ]]
 }
 
+host_runner_arch() {
+  case "$(uname -m)" in
+    x86_64|amd64) printf 'x86_64\n' ;;
+    aarch64|arm64) printf 'aarch64\n' ;;
+    i386|i486|i586|i686) printf 'x86\n' ;;
+    *) uname -m ;;
+  esac
+}
+
+runner_binary_for_path() {
+  local path="$1" root
+  if [[ "$(basename "$path")" == "proton" ]]; then
+    root="$(dirname "$path")"
+    for path in "$root/files/bin/wine" "$root/files/bin/wine64" "$root/bin/wine" "$root/bin/wine64"; do
+      [[ -f "$path" ]] && { printf '%s\n' "$path"; return 0; }
+    done
+    return 1
+  fi
+  [[ -f "$path" ]] && printf '%s\n' "$path"
+}
+
+runner_file_arch() {
+  local binary info
+  binary="$(runner_binary_for_path "$1" || true)"
+  [[ -n "$binary" ]] || return 0
+  info="$(file -L -b "$binary" 2>/dev/null || true)"
+  case "$info" in
+    *'ARM aarch64'*|*'ARM64'*) printf 'aarch64\n' ;;
+    *'x86-64'*|*'x86_64'*|*'AMD x86-64'*) printf 'x86_64\n' ;;
+    *'Intel 80386'*|*'80386'*) printf 'x86\n' ;;
+  esac
+}
+
+runner_arch_matches_host() {
+  local path="$1" runner_arch host_arch
+  runner_arch="$(runner_file_arch "$path")"
+  [[ -n "$runner_arch" ]] || return 0
+  host_arch="$(host_runner_arch)"
+  [[ "$runner_arch" == "$host_arch" || ( "$host_arch" == "x86_64" && "$runner_arch" == "x86" ) ]]
+}
+
+validate_runner_arch() {
+  local path="$1" runner_arch host_arch binary
+  runner_arch="$(runner_file_arch "$path")"
+  [[ -n "$runner_arch" ]] || return 0
+  host_arch="$(host_runner_arch)"
+  if [[ "$runner_arch" == "$host_arch" || ( "$host_arch" == "x86_64" && "$runner_arch" == "x86" ) ]]; then
+    return 0
+  fi
+  binary="$(runner_binary_for_path "$path" || printf '%s' "$path")"
+  die "runner architecture mismatch: $path
+Host architecture: $host_arch
+Runner binary: $binary ($runner_arch)
+Remove this runner and reinstall the matching build."
+}
+
 reset_runners() {
   RUNNER_TYPES=()
   RUNNER_SOURCES=()
@@ -517,6 +573,7 @@ reset_runners() {
 add_runner() {
   local type="$1" source="$2" path="$3" name real
   [[ -x "$path" ]] || return 0
+  runner_arch_matches_host "$path" || return 0
 
   real="$(realpath -m "$path")"
   [[ -n "${RUNNER_SEEN[$real]:-}" ]] && return 0
@@ -684,12 +741,12 @@ try_resolve_runner_from_prefix() {
   [[ -n "$config_line" ]] || return 1
 
   runner_root="$(dirname "$(dirname "$(dirname "$config_line")")")"
-  if [[ -x "$runner_root/proton" ]]; then
+  if [[ -x "$runner_root/proton" ]] && runner_arch_matches_host "$runner_root/proton"; then
     RESOLVED_RUNNER_TYPE="proton"
     RESOLVED_RUNNER_PATH="$(realpath -m "$runner_root/proton")"
     return 0
   fi
-  if [[ -x "$runner_root/bin/wine" ]]; then
+  if [[ -x "$runner_root/bin/wine" ]] && runner_arch_matches_host "$runner_root/bin/wine"; then
     RESOLVED_RUNNER_TYPE="wine"
     RESOLVED_RUNNER_PATH="$(realpath -m "$runner_root/bin/wine")"
     return 0
@@ -826,7 +883,7 @@ try_resolve_runner_product() {
     "$HOME/.local/share/lutris/runners/wine/$name/proton" \
     "$HOME/.var/app/net.lutris.Lutris/data/lutris/runners/proton/$name/proton" \
     "$HOME/.var/app/net.lutris.Lutris/data/lutris/runners/wine/$name/proton"; do
-    if [[ -x "$path" ]]; then
+    if [[ -x "$path" ]] && runner_arch_matches_host "$path"; then
       RESOLVED_RUNNER_TYPE="proton"
       RESOLVED_RUNNER_PATH="$(realpath -m "$path")"
       return 0
@@ -887,6 +944,18 @@ import urllib.error
 product = sys.argv[1]
 version = sys.argv[2]
 
+machine = __import__("platform").machine().lower()
+if machine in ("x86_64", "amd64"):
+    blocked_arches = ("aarch64", "arm64")
+elif machine in ("aarch64", "arm64"):
+    blocked_arches = ("x86_64", "amd64")
+else:
+    blocked_arches = ()
+
+def asset_matches_host(name):
+    lower = name.lower()
+    return not any(arch in lower for arch in blocked_arches)
+
 if product == "ge":
     if version == "latest":
         url = "https://api.github.com/repos/GloriousEggroll/proton-ge-custom/releases/latest"
@@ -923,9 +992,9 @@ for asset in assets:
     download = asset.get("browser_download_url", "")
     if not download:
         continue
-    if archive is None and any(name.endswith(suffix) for suffix in archive_suffixes):
+    if archive is None and asset_matches_host(name) and any(name.endswith(suffix) for suffix in archive_suffixes):
         archive = (name, download)
-    if checksum is None and name.endswith(checksum_suffix):
+    if checksum is None and asset_matches_host(name) and name.endswith(checksum_suffix):
         checksum = (name, download)
 
 if archive is None:
@@ -1418,6 +1487,7 @@ select_init_runner() {
 run_proton_command() {
   local runner="$1"
   shift
+  validate_runner_arch "$runner"
   mkdir -p "$PREFIX"
   prepare_mangohud_env
   env \
@@ -1437,6 +1507,7 @@ run_proton_command() {
 exec_proton_command() {
   local runner="$1"
   shift
+  validate_runner_arch "$runner"
   mkdir -p "$PREFIX"
   prepare_mangohud_env
   exec env \
@@ -1456,6 +1527,7 @@ exec_proton_command() {
 run_wine_command() {
   local runner="$1"
   shift
+  validate_runner_arch "$runner"
   mkdir -p "$PREFIX/pfx"
   prepare_mangohud_env
   env "${MANGOHUD_ENV[@]}" "${DEBUG_ENV[@]}" "${CACHED_ENV[@]}" "${RUN_ENV[@]}" WINEPREFIX="$PREFIX/pfx" "$runner" "$@"
@@ -1464,6 +1536,7 @@ run_wine_command() {
 exec_wine_command() {
   local runner="$1"
   shift
+  validate_runner_arch "$runner"
   mkdir -p "$PREFIX/pfx"
   prepare_mangohud_env
   exec env "${MANGOHUD_ENV[@]}" "${DEBUG_ENV[@]}" "${CACHED_ENV[@]}" "${RUN_ENV[@]}" WINEPREFIX="$PREFIX/pfx" "$runner" "$@"
@@ -1539,6 +1612,7 @@ build_gamescope_args() {
 run_gamescope_proton_command() {
   local runner="$1"
   shift
+  validate_runner_arch "$runner"
   mkdir -p "$PREFIX"
   build_gamescope_args
   prepare_mangohud_env
@@ -1559,6 +1633,7 @@ run_gamescope_proton_command() {
 run_gamescope_wine_command() {
   local runner="$1"
   shift
+  validate_runner_arch "$runner"
   mkdir -p "$PREFIX/pfx"
   build_gamescope_args
   prepare_mangohud_env
@@ -2009,7 +2084,7 @@ parse_args() {
               exit 0
               ;;
             --windowed)
-GAMESCOPE_FULLSCREEN=1
+              GAMESCOPE_FULLSCREEN=0
               shift
               ;;
             --fullscreen)

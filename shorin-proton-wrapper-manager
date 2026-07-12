@@ -1671,7 +1671,7 @@ class ManagerApp(Gtk.Application):
         self.status_label = None
         self.status_clear_source_id = 0
         self.refresh_source_id = 0
-        self.slow_refresh_tick = 0
+        self.refresh_tick = 0
         self.popover_open = False
         self.update_button = None
         self.update_check_source_id = 0
@@ -1699,7 +1699,7 @@ class ManagerApp(Gtk.Application):
         self.window.present()
         self.reload_prefixes()
         self.refresh_all()
-        self.refresh_source_id = GLib.timeout_add_seconds(2, self.auto_refresh)
+        self.refresh_source_id = GLib.timeout_add_seconds(3, self.auto_refresh)
         self.check_for_updates()
         self.update_check_source_id = GLib.timeout_add_seconds(600, self.check_for_updates)
 
@@ -1933,9 +1933,13 @@ class ManagerApp(Gtk.Application):
     def refresh_all(self) -> None:
         if self.popover_open:
             return
-        self.refresh_apps()
-        self.refresh_install_dirs()
-        self.refresh_processes()
+        visible = self.stack.get_visible_child_name() if self.stack else "apps"
+        if visible == "processes":
+            self.refresh_processes()
+        elif visible == "install_dirs":
+            self.refresh_install_dirs()
+        else:
+            self.refresh_apps()
 
     def refresh_process_page(self) -> None:
         self.reload_prefixes()
@@ -1944,13 +1948,18 @@ class ManagerApp(Gtk.Application):
     def auto_refresh(self) -> bool:
         if self.popover_open:
             return True
+        self.refresh_tick += 1
         visible = self.stack.get_visible_child_name() if self.stack else ""
         if visible == "processes":
+            if self.refresh_tick % 2 == 0:
+                self.reload_prefixes()
             self.refresh_processes()
         elif visible == "install_dirs":
-            self.refresh_install_dirs()
+            if self.refresh_tick % 4 == 0:
+                self.refresh_install_dirs()
         elif visible == "apps":
-            self.refresh_apps()
+            if self.refresh_tick % 3 == 0:
+                self.refresh_apps()
         return True
 
     def clear_list(self, list_box: Gtk.ListBox) -> None:
@@ -2712,7 +2721,7 @@ class ManagerApp(Gtk.Application):
         add_combo(gamescope_grid, 1, "gamescope_res", TEXT["resolution"], resolution_options())
         add_combo(gamescope_grid, 2, "gamescope_fps", TEXT["fps"], fps_options())
         add_entry(gamescope_grid, 3, "gamescope_args", TEXT["extra_args"])
-        gamescope_controls = [fullscreen, fsr, widgets["gamescope_res"], widgets["gamescope_fps"], widgets["gamescope_args"]]
+        gamescope_controls = [fsr, widgets["gamescope_res"], widgets["gamescope_fps"], widgets["gamescope_args"]]
 
         def update_gamescope_sensitivity(_button=None):
             active = gamescope.get_active()
