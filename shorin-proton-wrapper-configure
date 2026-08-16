@@ -13,7 +13,7 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
-from gi.repository import Gdk, Gio, GLib, Gtk
+from gi.repository import Gdk, Gio, GLib, Gtk, Pango
 
 
 def is_zh() -> bool:
@@ -166,6 +166,68 @@ def card(title: str, description: str | None = None):
     box.set_margin_end(0)
     header = section(title, description)
     box.append(header)
+    return box
+
+
+def screen_work_area() -> tuple[int, int]:
+    display = Gdk.Display.get_default()
+    if display:
+        monitors = display.get_monitors()
+        for index in range(monitors.get_n_items()):
+            monitor = monitors.get_item(index)
+            if not monitor:
+                continue
+            geometry = monitor.get_geometry()
+            if geometry.width > 0 and geometry.height > 0:
+                return geometry.width, geometry.height
+    return 1920, 1080
+
+
+def fitted_size(width: int, height: int) -> tuple[int, int]:
+    """Clamp a preferred window size to what the screen can actually show."""
+    area_width, area_height = screen_work_area()
+    return (
+        min(width, max(360, area_width - 80)),
+        min(height, max(320, area_height - 120)),
+    )
+
+
+def scrollable(content: Gtk.Widget, max_height: int) -> Gtk.ScrolledWindow:
+    """A window whose child is this can be resized smaller than its content.
+
+    Without it GTK refuses to shrink the window below the natural size of the
+    form, so on a small screen the lower half is simply cut off.
+    """
+    scroll = Gtk.ScrolledWindow(hexpand=True, vexpand=True)
+    scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+    scroll.set_propagate_natural_width(True)
+    scroll.set_propagate_natural_height(True)
+    scroll.set_max_content_height(max_height)
+    scroll.set_child(content)
+    return scroll
+
+
+def wrap_anywhere(label: Gtk.Label) -> Gtk.Label:
+    """Let a label break inside a word.
+
+    A filesystem path has no spaces to wrap at, so a plain wrapping label
+    demands the full path width and pushes the window wider than the screen.
+    """
+    label.set_wrap(True)
+    label.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+    return label
+
+
+def action_bar(*buttons: Gtk.Widget) -> Gtk.Box:
+    """Buttons live outside the scroll area so they stay reachable."""
+    box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+    box.set_halign(Gtk.Align.END)
+    box.set_margin_top(12)
+    box.set_margin_bottom(16)
+    box.set_margin_start(18)
+    box.set_margin_end(18)
+    for button in buttons:
+        box.append(button)
     return box
 
 
@@ -627,11 +689,12 @@ class SelectorApp(Gtk.Application):
 
     def show_cache_window(self, cache):
         self.window = Gtk.ApplicationWindow(application=self, title=TEXT["title"])
-        self.window.set_default_size(620, 420)
+        window_width, window_height = fitted_size(620, 420)
+        self.window.set_default_size(window_width, window_height)
 
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
         outer.set_margin_top(20)
-        outer.set_margin_bottom(20)
+        outer.set_margin_bottom(4)
         outer.set_margin_start(20)
         outer.set_margin_end(20)
 
@@ -642,14 +705,14 @@ class SelectorApp(Gtk.Application):
         content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
 
         prefix_card = card(TEXT["prefix"])
-        prefix = Gtk.Label(label=cache["prefix"], xalign=0, wrap=True)
+        prefix = wrap_anywhere(Gtk.Label(label=cache["prefix"], xalign=0))
         prefix.add_css_class("dim-label")
         prefix.set_max_width_chars(58)
         prefix_card.append(prefix)
         content.append(prefix_card)
 
         runner_card = card(TEXT["runner"])
-        runner = Gtk.Label(label=cache["runner"], xalign=0, wrap=True)
+        runner = wrap_anywhere(Gtk.Label(label=cache["runner"], xalign=0))
         runner.add_css_class("dim-label")
         runner.set_max_width_chars(58)
         runner_card.append(runner)
@@ -675,33 +738,28 @@ class SelectorApp(Gtk.Application):
         content.append(question)
         outer.append(content)
 
-        spacer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
-        spacer.set_vexpand(True)
-        outer.append(spacer)
-
-        buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        buttons.set_halign(Gtk.Align.END)
         cancel = Gtk.Button(label=TEXT["cancel"])
         reselect = Gtk.Button(label=TEXT["reselect"])
         run = Gtk.Button(label=TEXT["run"])
         cancel.connect("clicked", lambda _b: self.quit())
         reselect.connect("clicked", lambda _b: (self.window.close(), self.show_select_window(cache)))
         run.connect("clicked", lambda _b: self.run_with(cache["prefix"], cache["runner"], cache))
-        buttons.append(cancel)
-        buttons.append(reselect)
-        buttons.append(run)
-        outer.append(buttons)
 
-        self.window.set_child(outer)
+        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        root.append(scrollable(outer, window_height))
+        root.append(action_bar(cancel, reselect, run))
+
+        self.window.set_child(root)
         self.window.present()
 
     def show_select_window(self, initial: dict | None = None):
         self.window = Gtk.ApplicationWindow(application=self, title=TEXT["title"])
-        self.window.set_default_size(820, 620)
+        window_width, window_height = fitted_size(820, 620)
+        self.window.set_default_size(window_width, window_height)
 
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
         outer.set_margin_top(18)
-        outer.set_margin_bottom(18)
+        outer.set_margin_bottom(4)
         outer.set_margin_start(18)
         outer.set_margin_end(18)
 
@@ -742,7 +800,7 @@ class SelectorApp(Gtk.Application):
         runner_box.append(self.runner_combo)
         runner_card.append(runner_box)
 
-        self.runner_detail = Gtk.Label(xalign=0, wrap=True)
+        self.runner_detail = wrap_anywhere(Gtk.Label(xalign=0))
         self.runner_detail.add_css_class("dim-label")
         runner_card.append(self.runner_detail)
         outer.append(runner_card)
@@ -859,17 +917,16 @@ class SelectorApp(Gtk.Application):
         outer.append(display_card)
         self.on_gamescope_toggled(self.gamescope_check)
 
-        buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        buttons.set_halign(Gtk.Align.END)
         cancel = Gtk.Button(label=TEXT["cancel"])
         run = Gtk.Button(label=TEXT["run"])
         cancel.connect("clicked", lambda _b: self.quit())
         run.connect("clicked", self.on_run)
-        buttons.append(cancel)
-        buttons.append(run)
-        outer.append(buttons)
 
-        self.window.set_child(outer)
+        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        root.append(scrollable(outer, window_height))
+        root.append(action_bar(cancel, run))
+
+        self.window.set_child(root)
         self.window.present()
 
     def populate_runner_combo(self, active_path: str = ""):

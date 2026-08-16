@@ -10,7 +10,11 @@ Arch Linux 可以从AUR安装。
 
 灵感来自 Wine 的配置过程。安装 Wine 后运行 `winecfg` 会在 `~/.wine` 目录初始化前置运行环境。我借鉴并改良了这个设计，运行 exe 的默认行为是检测 `~/.proton` 是否存在，如果不存在则静默初始化。考虑到国内二游盛行，我选择了 `DW-Proton` 作为默认运行器。
 
-首次自动安装运行器时，临时下载文件会放在 `~/.cache/shorin-proton-wrapper/downloads`，安装成功后清理。下载过程中会通过桌面通知提示进度；无通知环境时自动降级为仅输出日志。单次下载默认 10 分钟超时。
+首次自动安装运行器时，临时下载文件会放在 `~/.cache/shorin-proton-wrapper/downloads`，安装成功后清理。下载过程中会通过桌面通知提示进度；无通知环境时自动降级为仅输出日志。下载不限总时长，只在连续 120 秒几乎没有流量时判定为卡死并中止；中断后重新运行会从断点续传。
+
+安装失败时会弹出常驻通知说明原因，完整日志在 `~/.cache/shorin-proton-wrapper/logs/install-*.log`，前置环境初始化日志在 `~/.cache/shorin-proton-wrapper/logs/init.log`。
+
+可调环境变量：`SHORIN_PROTON_WRAPPER_DOWNLOAD_STALL`（卡死判定秒数，默认 120）、`SHORIN_PROTON_WRAPPER_DOWNLOAD_TIMEOUT`（下载总时长上限秒数，默认 0 表示不限制）。
 
 ## 设置Windows程序运行环境
 

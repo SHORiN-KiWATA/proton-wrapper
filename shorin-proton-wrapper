@@ -8,14 +8,21 @@ XDG_CACHE_HOME_VALUE="${XDG_CACHE_HOME:-$HOME/.cache}"
 LOCAL_RUNNER_DIR="$XDG_DATA_HOME_VALUE/proton/runners"
 WRAPPER_CACHE_DIR="$XDG_CACHE_HOME_VALUE/shorin-proton-wrapper"
 INSTALL_DOWNLOAD_DIR="$WRAPPER_CACHE_DIR/downloads"
-DOWNLOAD_TIMEOUT_SECONDS="${SHORIN_PROTON_WRAPPER_DOWNLOAD_TIMEOUT:-600}"
+DOWNLOAD_TIMEOUT_SECONDS="${SHORIN_PROTON_WRAPPER_DOWNLOAD_TIMEOUT:-0}"
+DOWNLOAD_STALL_SECONDS="${SHORIN_PROTON_WRAPPER_DOWNLOAD_STALL:-120}"
 DOWNLOAD_NOTIFY_INTERVAL="${SHORIN_PROTON_WRAPPER_NOTIFY_INTERVAL:-8}"
 DOWNLOAD_NOTIFY_EXPIRE="${SHORIN_PROTON_WRAPPER_NOTIFY_EXPIRE:-8000}"
 STEAM_ROOT="${STEAM_COMPAT_CLIENT_INSTALL_PATH:-$HOME/.steam/root}"
 
-[[ "$DOWNLOAD_TIMEOUT_SECONDS" =~ ^[0-9]+$ && "$DOWNLOAD_TIMEOUT_SECONDS" -gt 0 ]] || DOWNLOAD_TIMEOUT_SECONDS=600
+# 0 means no total cap: a slow but healthy download must not be killed.
+# Stalled transfers are caught by DOWNLOAD_STALL_SECONDS instead.
+[[ "$DOWNLOAD_TIMEOUT_SECONDS" =~ ^[0-9]+$ ]] || DOWNLOAD_TIMEOUT_SECONDS=0
+[[ "$DOWNLOAD_STALL_SECONDS" =~ ^[0-9]+$ && "$DOWNLOAD_STALL_SECONDS" -gt 0 ]] || DOWNLOAD_STALL_SECONDS=120
 [[ "$DOWNLOAD_NOTIFY_INTERVAL" =~ ^[0-9]+$ && "$DOWNLOAD_NOTIFY_INTERVAL" -gt 0 ]] || DOWNLOAD_NOTIFY_INTERVAL=8
 [[ "$DOWNLOAD_NOTIFY_EXPIRE" =~ ^[0-9]+$ && "$DOWNLOAD_NOTIFY_EXPIRE" -gt 0 ]] || DOWNLOAD_NOTIFY_EXPIRE=8000
+
+INSTALL_ERROR=""
+INSTALL_LOG=""
 
 ACTION=""
 PRODUCT=""
@@ -556,7 +563,7 @@ validate_runner_arch() {
     return 0
   fi
   binary="$(runner_binary_for_path "$path" || printf '%s' "$path")"
-  die "runner architecture mismatch: $path
+  die_visible "runner architecture mismatch: $path
 Host architecture: $host_arch
 Runner binary: $binary ($runner_arch)
 Remove this runner and reinstall the matching build."
@@ -788,7 +795,7 @@ select_runner() {
     die_runner_not_found "$RUNNER_ARG"
   fi
 
-  ensure_runner_product dw || die "failed to install runner: dw"
+  ensure_runner_product dw || die_install "failed to install runner: dw"
 }
 
 list_runners() {
@@ -1018,35 +1025,32 @@ fetch_file() {
   fi
 
   tmp="$dest.part"
-  rm -f "$tmp"
   timeout_prefix=()
-  if command -v timeout >/dev/null 2>&1; then
+  # Only wrap in `timeout` when a total cap was explicitly requested; a healthy
+  # but slow transfer must be allowed to finish. Stalls are caught by curl/wget.
+  if [[ "$DOWNLOAD_TIMEOUT_SECONDS" -gt 0 ]] && command -v timeout >/dev/null 2>&1; then
     timeout_prefix=(timeout "${DOWNLOAD_TIMEOUT_SECONDS}s")
   fi
   product="${DOWNLOAD_NOTIFY_PRODUCT:-$(basename "$dest")}"
   title="Shorin Proton Wrapper"
+  status=0
   if command -v curl >/dev/null 2>&1; then
-    set +e
-    run_download_command_with_notifications "$title" "$product" "${timeout_prefix[@]}" curl -L --fail --progress-bar --connect-timeout 30 --max-time "$DOWNLOAD_TIMEOUT_SECONDS" -o "$tmp" "$url"
-    status=$?
-    set -e
-    if [[ $status -ne 0 ]]; then
-      rm -f "$tmp"
-      printf 'shorin-proton-wrapper: download failed: %s -> %s\n' "$url" "$dest" >&2
-      return 1
-    fi
+    run_download_command_with_notifications "$title" "$product" "${timeout_prefix[@]}" \
+      curl -L --fail --progress-bar --connect-timeout 30 \
+        --speed-limit 1024 --speed-time "$DOWNLOAD_STALL_SECONDS" \
+        --retry 3 --retry-delay 5 -C - -o "$tmp" "$url" || status=$?
   elif command -v wget >/dev/null 2>&1; then
-    set +e
-    run_download_command_with_notifications "$title" "$product" "${timeout_prefix[@]}" wget --timeout=30 --tries=3 -O "$tmp" "$url"
-    status=$?
-    set -e
-    if [[ $status -ne 0 ]]; then
-      rm -f "$tmp"
-      printf 'shorin-proton-wrapper: download failed: %s -> %s\n' "$url" "$dest" >&2
-      return 1
-    fi
+    run_download_command_with_notifications "$title" "$product" "${timeout_prefix[@]}" \
+      wget --continue --timeout=30 --read-timeout="$DOWNLOAD_STALL_SECONDS" --tries=3 -O "$tmp" "$url" || status=$?
   else
-    die "curl or wget is required for downloads"
+    install_error "curl or wget is required for downloads"
+    return 1
+  fi
+
+  if [[ $status -ne 0 ]]; then
+    # Keep the partial file: the next attempt resumes instead of restarting.
+    install_error "download failed (exit $status): $url"
+    return 1
   fi
   mv "$tmp" "$dest"
 }
@@ -1067,25 +1071,56 @@ notify_download() {
     "$title" "$message" >/dev/null 2>&1 || true
 }
 
+# Errors must survive a desktop launch, where stderr goes nowhere. Critical
+# urgency keeps the notification on screen until it is dismissed.
+notify_error() {
+  local message="$1"
+  notify_available || return 0
+  notify-send \
+    --app-name="Shorin Proton Wrapper" \
+    --app-icon=shorin-proton \
+    --icon=shorin-proton \
+    --urgency=critical \
+    "Shorin Proton Wrapper" "$message" >/dev/null 2>&1 || true
+}
+
+# Record a failure reason and report it, without killing the caller: the
+# caller still has to notify the user and clean up.
+install_error() {
+  INSTALL_ERROR="$*"
+  printf 'shorin-proton-wrapper: %s\n' "$*" >&2
+}
+
+die_visible() {
+  notify_error "$*"
+  die "$@"
+}
+
 download_message() {
   local key="$1" product="$2"
   if [[ "$(ui_lang)" == "zh" ]]; then
     case "$key" in
       start) printf '正在下载 %s...\n' "$product" ;;
       progress) printf '仍在下载 %s...\n' "$product" ;;
-      downloaded) printf '%s 下载完成，正在安装...\n' "$product" ;;
+      downloaded) printf '%s 下载完成，正在解压安装...\n' "$product" ;;
+      extracting) printf '正在解压 %s，请稍候...\n' "$product" ;;
       done) printf '%s 已安装完成。\n' "$product" ;;
       failed) printf '%s 下载或安装失败。\n' "$product" ;;
       timeout) printf '%s 下载超时，已终止。\n' "$product" ;;
+      init) printf '正在初始化运行环境，首次运行需要几分钟...\n' ;;
+      init_failed) printf '运行环境初始化失败。\n' ;;
     esac
   else
     case "$key" in
       start) printf 'Downloading %s...\n' "$product" ;;
       progress) printf 'Still downloading %s...\n' "$product" ;;
-      downloaded) printf '%s download completed. Installing...\n' "$product" ;;
+      downloaded) printf '%s download completed. Extracting and installing...\n' "$product" ;;
+      extracting) printf 'Extracting %s, please wait...\n' "$product" ;;
       done) printf '%s has been installed.\n' "$product" ;;
       failed) printf 'Failed to download or install %s.\n' "$product" ;;
       timeout) printf '%s download timed out and was stopped.\n' "$product" ;;
+      init) printf 'Setting up the runtime environment. The first run takes a few minutes...\n' ;;
+      init_failed) printf 'Failed to set up the runtime environment.\n' ;;
     esac
   fi
 }
@@ -1109,40 +1144,47 @@ run_download_command_with_notifications() {
   ) &
   notifier_pid=$!
 
-  set +e
-  wait "$pid"
-  status=$?
-  set -e
+  status=0
+  wait "$pid" || status=$?
   kill "$notifier_pid" >/dev/null 2>&1 || true
   wait "$notifier_pid" >/dev/null 2>&1 || true
   if [[ $status -eq 124 ]]; then
     message="$(download_message timeout "$product")"
     notify_download "$title" "$message"
-  elif [[ $status -ne 0 ]]; then
-    message="$(download_message failed "$product")"
-    notify_download "$title" "$message"
   fi
+  # Other failures are reported once, with a reason, by the install caller.
   return "$status"
 }
 
 install_runner_with_notifications() {
-  local product title message status old_product
+  local product title message status old_product log_dir
   product="$(runner_dir_name "$(normalize_product "$PRODUCT")")"
   title="Shorin Proton Wrapper"
   old_product="${DOWNLOAD_NOTIFY_PRODUCT:-}"
   DOWNLOAD_NOTIFY_PRODUCT="$product"
-  set +e
-  install_runner
-  status=$?
-  set -e
+  INSTALL_ERROR=""
+
+  log_dir="$WRAPPER_CACHE_DIR/logs"
+  mkdir -p "$log_dir"
+  INSTALL_LOG="$log_dir/install-$(safe_log_name "$product").log"
+  : > "$INSTALL_LOG"
+
+  status=0
+  install_runner > >(tee -a "$INSTALL_LOG") 2>&1 || status=$?
+
   if [[ -n "$old_product" ]]; then
     DOWNLOAD_NOTIFY_PRODUCT="$old_product"
   else
     unset DOWNLOAD_NOTIFY_PRODUCT
   fi
+
   if [[ $status -ne 0 ]]; then
     message="$(download_message failed "$product")"
-    notify_download "$title" "$message"
+    if [[ -n "$INSTALL_ERROR" ]]; then
+      message="$message"$'\n'"$INSTALL_ERROR"
+    fi
+    message="$message"$'\n'"$INSTALL_LOG"
+    notify_error "$message"
   else
     message="$(download_message done "$product")"
     notify_download "$title" "$message"
@@ -1153,8 +1195,32 @@ install_runner_with_notifications() {
 verify_archive() {
   local dir="$1" checksum_name="$2"
   if ! (cd "$dir" && sha512sum -c "$checksum_name"); then
-    printf 'shorin-proton-wrapper: checksum verification failed: %s/%s\n' "$dir" "$checksum_name" >&2
-    printf 'shorin-proton-wrapper: the downloaded archive may be corrupted. Delete the archive and checksum file, then retry.\n' >&2
+    install_error "checksum verification failed: $dir/$checksum_name
+The download is incomplete or corrupted. It has been discarded; run again to re-download."
+    return 1
+  fi
+}
+
+dir_free_kib() {
+  df -Pk "$1" 2>/dev/null | awk 'NR == 2 { print $4 }'
+}
+
+file_size_kib() {
+  local size
+  size="$(stat -c %s "$1" 2>/dev/null || printf '0')"
+  printf '%s\n' "$(( (size + 1023) / 1024 ))"
+}
+
+# Proton archives expand to roughly five times their compressed size. Refuse
+# early with a clear reason instead of failing halfway through tar.
+check_extract_space() {
+  local archive="$1" dest="$2" needed free
+  needed=$(( $(file_size_kib "$archive") * 5 ))
+  free="$(dir_free_kib "$dest")"
+  [[ "$free" =~ ^[0-9]+$ ]] || return 0
+  if [[ "$free" -lt "$needed" ]]; then
+    install_error "not enough free space in $dest
+Need about $(( (needed + 1023) / 1024 )) MiB, only $(( free / 1024 )) MiB available."
     return 1
   fi
 }
@@ -1225,21 +1291,36 @@ download_runner() {
   printf 'Version:    %s\n' "$tag"
 }
 
+# Returns non-zero on failure and leaves the reason in INSTALL_ERROR. It must
+# never exit: the caller is responsible for telling the user what went wrong.
 install_runner() {
-  local product info tag archive_name archive_url checksum_name checksum_url download_dir install_dir work_dir use_existing extract_dir root target temp_download_dir dir_name release_output
+  local product info tag archive_name archive_url checksum_name checksum_url download_dir install_dir work_dir use_existing extract_dir root target temp_download_dir dir_name release_output release_err
+  local product_name title
   product="$(normalize_product "$PRODUCT")"
   info=()
-  release_output="$(release_info "$product" "$VERSION" 2>&1)" || die "$release_output"
+  release_err="$(mktemp)"
+  if ! release_output="$(release_info "$product" "$VERSION" 2>"$release_err")"; then
+    install_error "$(<"$release_err")"
+    rm -f "$release_err"
+    return 1
+  fi
+  rm -f "$release_err"
   mapfile -t info <<< "$release_output"
   tag="${info[0]:-}" archive_name="${info[1]:-}" archive_url="${info[2]:-}" checksum_name="${info[3]:-}" checksum_url="${info[4]:-}"
-  [[ -n "$tag" ]] || die "release not found for $product $VERSION"
+  if [[ -z "$tag" || -z "$archive_name" || -z "$checksum_name" ]]; then
+    install_error "release not found for $product $VERSION"
+    return 1
+  fi
   download_dir="$(expand_path "${DOWNLOAD_DIR:-$INSTALL_DOWNLOAD_DIR}")"
   install_dir="$(expand_path "${INSTALL_DIR:-$(default_install_dir)}")"
   dir_name="$(runner_target_dir_name "$product" "$VERSION" "$tag")"
   target="$install_dir/$dir_name"
+  product_name="$(runner_dir_name "$product")"
+  title="Shorin Proton Wrapper"
 
   mkdir -p "$download_dir" "$install_dir"
-  find "$download_dir" -maxdepth 1 -type d -name 'install-*' -mmin +1440 -exec rm -rf {} + 2>/dev/null || true
+  find "$download_dir" -maxdepth 1 -type d \( -name 'install-*' -o -name 'partial-*' \) -mmin +1440 -exec rm -rf {} + 2>/dev/null || true
+  find "$install_dir" -maxdepth 1 -type d -name '.shorin-extract-*' -mmin +60 -exec rm -rf {} + 2>/dev/null || true
 
   use_existing=0
   temp_download_dir=""
@@ -1247,7 +1328,7 @@ install_runner() {
 
   cleanup_install_failure() {
     [[ -n "$extract_dir" ]] && rm -rf "$extract_dir"
-    [[ -n "$temp_download_dir" ]] && rm -rf "$temp_download_dir"
+    return 0
   }
 
   if [[ -s "$download_dir/$archive_name" && -s "$download_dir/$checksum_name" ]]; then
@@ -1255,48 +1336,63 @@ install_runner() {
     use_existing=1
     printf 'Using downloaded files in: %s\n' "$download_dir"
   else
-    temp_download_dir="$(mktemp -d "$download_dir/install-XXXXXX")"
+    # A fixed directory per release, not a random one: a retry after a dropped
+    # connection resumes the partial file instead of downloading it all again.
+    temp_download_dir="$download_dir/partial-$tag"
     work_dir="$temp_download_dir"
+    mkdir -p "$work_dir"
     if ! fetch_file "$archive_url" "$work_dir/$archive_name"; then
-      cleanup_install_failure
-      exit 1
+      return 1
     fi
     if ! fetch_file "$checksum_url" "$work_dir/$checksum_name"; then
-      cleanup_install_failure
-      exit 1
+      return 1
     fi
-    local _product_name _title
-    _product_name="$(runner_dir_name "$product")"
-    _title="Shorin Proton Wrapper"
-    notify_download "$_title" "$(download_message downloaded "$_product_name")"
+    notify_download "$title" "$(download_message downloaded "$product_name")"
   fi
 
   if ! verify_archive "$work_dir" "$checksum_name"; then
-    cleanup_install_failure
-    exit 1
+    # A corrupt file must not be resumed, so this is the one case that discards it.
+    rm -f "$work_dir/$archive_name" "$work_dir/$archive_name.part" "$work_dir/$checksum_name"
+    return 1
   fi
 
-  extract_dir="$(mktemp -d)"
+  if ! check_extract_space "$work_dir/$archive_name" "$install_dir"; then
+    return 1
+  fi
+
+  notify_download "$title" "$(download_message extracting "$product_name")"
+
+  # Extract next to the install target, not in /tmp: /tmp is usually a tmpfs
+  # backed by RAM, and this keeps the final move a same-filesystem rename.
+  if ! extract_dir="$(mktemp -d "$install_dir/.shorin-extract-XXXXXX")"; then
+    install_error "failed to create a work directory in: $install_dir"
+    return 1
+  fi
   if ! tar -xf "$work_dir/$archive_name" -C "$extract_dir"; then
     cleanup_install_failure
-    die "failed to extract archive: $work_dir/$archive_name
-The archive may be corrupted. Delete it and retry."
+    install_error "failed to extract archive: $work_dir/$archive_name
+The archive may be corrupted or the disk may be full."
+    return 1
   fi
-  root="$(find_extracted_runner_root "$extract_dir")" || {
+  if ! root="$(find_extracted_runner_root "$extract_dir")"; then
     cleanup_install_failure
-    die "extracted archive does not contain a proton runner: $work_dir/$archive_name"
-  }
+    install_error "extracted archive does not contain a proton runner: $work_dir/$archive_name"
+    return 1
+  fi
   if [[ -e "$target" && ! -x "$target/proton" ]]; then
     cleanup_install_failure
-    die "install target exists but is not a runner: $target"
+    install_error "install target exists but is not a runner: $target"
+    return 1
   fi
   if ! rm -rf "$target"; then
     cleanup_install_failure
-    die "failed to remove old install target: $target"
+    install_error "failed to remove old install target: $target"
+    return 1
   fi
   if ! mv "$root" "$target"; then
     cleanup_install_failure
-    die "failed to install runner to: $target"
+    install_error "failed to install runner to: $target"
+    return 1
   fi
   printf '%s\n' "$tag" > "$target/.shorin-proton-wrapper-version"
   rm -rf "$extract_dir"
@@ -1342,7 +1438,7 @@ update_runner() {
           if [[ -n "$current" ]]; then
             printf '  %s -> %s\n' "$current" "$tag"
           fi
-          install_runner_with_notifications
+          install_runner_with_notifications || die_install "failed to update runner: $product"
           updated=1
         fi
       fi
@@ -1449,7 +1545,7 @@ remove_all_runners() {
 }
 
 ensure_runner_product() {
-  local product="$1" old_product old_version old_install_to
+  local product="$1" old_product old_version old_install_to status
   if try_resolve_runner_product "$product"; then
     return 0
   fi
@@ -1461,27 +1557,39 @@ ensure_runner_product() {
   PRODUCT="$product"
   VERSION="latest"
   INSTALL_TO="local"
-  install_runner_with_notifications
+  status=0
+  install_runner_with_notifications || status=$?
 
   PRODUCT="$old_product"
   VERSION="$old_version"
   INSTALL_TO="$old_install_to"
 
+  [[ $status -eq 0 ]] || return 1
+
   try_resolve_runner_product "$product"
+}
+
+# install_runner_with_notifications has already shown the reason; only announce
+# it here when the failure happened somewhere that stayed silent.
+die_install() {
+  if [[ -n "$INSTALL_ERROR" ]]; then
+    die "$*"
+  fi
+  die_visible "$*"
 }
 
 select_init_runner() {
   local product
   if [[ -n "$RUNNER_ARG" ]]; then
     if product="$(runner_product_alias "$RUNNER_ARG")"; then
-      ensure_runner_product "$product" || die "failed to install runner: $product"
+      ensure_runner_product "$product" || die_install "failed to install runner: $product"
     else
       resolve_runner_arg "$RUNNER_ARG"
     fi
     return 0
   fi
 
-  ensure_runner_product dw || die "failed to install runner: dw"
+  ensure_runner_product dw || die_install "failed to install runner: dw"
 }
 
 run_proton_command() {
@@ -1553,7 +1661,7 @@ validate_number() {
 prepare_mangohud_env() {
   MANGOHUD_ENV=()
   [[ $MANGOHUD -eq 1 ]] || return 0
-  command -v mangohud >/dev/null 2>&1 || die "mangohud is not installed"
+  command -v mangohud >/dev/null 2>&1 || die_visible "mangohud is not installed"
   MANGOHUD_ENV=("MANGOHUD=1")
 }
 
@@ -1590,7 +1698,7 @@ PY
 build_gamescope_args() {
   GAMESCOPE_ARGS=()
   [[ $GAMESCOPE -eq 1 ]] || return 0
-  command -v gamescope >/dev/null 2>&1 || die "gamescope is not installed"
+  command -v gamescope >/dev/null 2>&1 || die_visible "gamescope is not installed"
 
   if [[ $GAMESCOPE_FULLSCREEN -eq 1 ]]; then
     GAMESCOPE_ARGS+=("-f")
@@ -1641,11 +1749,26 @@ run_gamescope_wine_command() {
 }
 
 init_prefix() {
+  local status log
   select_init_runner
+
+  # Creating a prefix takes minutes on first run. Without this the desktop
+  # launch looks dead between the runner install and the program window.
+  log="$WRAPPER_CACHE_DIR/logs/init.log"
+  mkdir -p "$(dirname "$log")"
+  notify_download "Shorin Proton Wrapper" "$(download_message init "")"
+
+  status=0
   if [[ "$RESOLVED_RUNNER_TYPE" == "proton" ]]; then
-    run_proton_command "$RESOLVED_RUNNER_PATH" run wineboot -u
+    run_proton_command "$RESOLVED_RUNNER_PATH" run wineboot -u > >(tee -a "$log") 2>&1 || status=$?
   else
-    run_wine_command "$RESOLVED_RUNNER_PATH" wineboot -u
+    run_wine_command "$RESOLVED_RUNNER_PATH" wineboot -u > >(tee -a "$log") 2>&1 || status=$?
+  fi
+
+  if [[ $status -ne 0 ]]; then
+    notify_error "$(download_message init_failed "")"$'\n'"$log"
+    die "failed to initialize prefix: $PREFIX (exit $status)
+See $log"
   fi
 }
 
@@ -1847,7 +1970,7 @@ prepare_mapped_drive_target() {
 run_target() {
   local workdir exe proton_exe status
   TARGET="$(expand_path "$TARGET")"
-  [[ -e "$TARGET" ]] || die "target not found: $TARGET"
+  [[ -e "$TARGET" ]] || die_visible "target not found: $TARGET"
   apply_cached_association "$TARGET"
   PREFIX="$(expand_path "$PREFIX")"
   select_runner
