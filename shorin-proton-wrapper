@@ -13,6 +13,11 @@ DOWNLOAD_STALL_SECONDS="${SHORIN_PROTON_WRAPPER_DOWNLOAD_STALL:-120}"
 DOWNLOAD_NOTIFY_INTERVAL="${SHORIN_PROTON_WRAPPER_NOTIFY_INTERVAL:-8}"
 DOWNLOAD_NOTIFY_EXPIRE="${SHORIN_PROTON_WRAPPER_NOTIFY_EXPIRE:-8000}"
 STEAM_ROOT="${STEAM_COMPAT_CLIENT_INSTALL_PATH:-$HOME/.steam/root}"
+# Proton runs inside the Steam Linux Runtime its toolmanifest.vdf asks for;
+# set SHORIN_PROTON_WRAPPER_RUNTIME=0 to run it directly on the host.
+RUNTIME_ENABLED="${SHORIN_PROTON_WRAPPER_RUNTIME:-1}"
+RUNTIME_DIR="$XDG_DATA_HOME_VALUE/shorin-proton-wrapper/runtime"
+RUNTIME_PREFIX=()
 
 # 0 means no total cap: a slow but healthy download must not be killed.
 # Stalled transfers are caught by DOWNLOAD_STALL_SECONDS instead.
@@ -1059,29 +1064,49 @@ notify_available() {
   command -v notify-send >/dev/null 2>&1 && [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]
 }
 
-notify_download() {
-  local title="$1" message="$2"
+# One run keeps a single notification and updates it in place (download,
+# extraction, done, prefix setup, errors) instead of stacking new ones.
+NOTIFY_ID=""
+NOTIFY_CAN_REPLACE=""
+
+notify_can_replace() {
+  if [[ -z "$NOTIFY_CAN_REPLACE" ]]; then
+    NOTIFY_CAN_REPLACE=0
+    if notify-send --help 2>/dev/null | grep -q -- '--replace-id'; then
+      NOTIFY_CAN_REPLACE=1
+    fi
+  fi
+  [[ "$NOTIFY_CAN_REPLACE" == 1 ]]
+}
+
+notify_send() {
+  local urgency="$1" expire="$2" title="$3" message="$4" id
+  local args=(--app-name="Shorin Proton Wrapper" --app-icon=shorin-proton --icon=shorin-proton --urgency="$urgency")
   notify_available || return 0
-  notify-send \
-    --app-name="Shorin Proton Wrapper" \
-    --app-icon=shorin-proton \
-    --icon=shorin-proton \
-    --urgency=normal \
-    --expire-time="$DOWNLOAD_NOTIFY_EXPIRE" \
-    "$title" "$message" >/dev/null 2>&1 || true
+  [[ -n "$expire" ]] && args+=(--expire-time="$expire")
+  if notify_can_replace; then
+    [[ -n "$NOTIFY_ID" ]] && args+=(--replace-id="$NOTIFY_ID")
+    if id="$(notify-send "${args[@]}" --print-id "$title" "$message" 2>/dev/null)" && [[ "$id" =~ ^[0-9]+$ ]]; then
+      NOTIFY_ID="$id"
+    fi
+  else
+    notify-send "${args[@]}" "$title" "$message" >/dev/null 2>&1 || true
+  fi
+}
+
+# Something is still going on: stay up until the next update replaces it.
+notify_progress() {
+  notify_send normal "$(( DOWNLOAD_NOTIFY_INTERVAL * 1000 + 5000 ))" "$1" "$2"
+}
+
+notify_download() {
+  notify_send normal "$DOWNLOAD_NOTIFY_EXPIRE" "$1" "$2"
 }
 
 # Errors must survive a desktop launch, where stderr goes nowhere. Critical
 # urgency keeps the notification on screen until it is dismissed.
 notify_error() {
-  local message="$1"
-  notify_available || return 0
-  notify-send \
-    --app-name="Shorin Proton Wrapper" \
-    --app-icon=shorin-proton \
-    --icon=shorin-proton \
-    --urgency=critical \
-    "Shorin Proton Wrapper" "$message" >/dev/null 2>&1 || true
+  notify_send critical "" "Shorin Proton Wrapper" "$1"
 }
 
 # Record a failure reason and report it, without killing the caller: the
@@ -1101,7 +1126,6 @@ download_message() {
   if [[ "$(ui_lang)" == "zh" ]]; then
     case "$key" in
       start) printf '正在下载 %s...\n' "$product" ;;
-      progress) printf '仍在下载 %s...\n' "$product" ;;
       downloaded) printf '%s 下载完成，正在解压安装...\n' "$product" ;;
       extracting) printf '正在解压 %s，请稍候...\n' "$product" ;;
       done) printf '%s 已安装完成。\n' "$product" ;;
@@ -1109,11 +1133,11 @@ download_message() {
       timeout) printf '%s 下载超时，已终止。\n' "$product" ;;
       init) printf '正在初始化运行环境，首次运行需要几分钟...\n' ;;
       init_failed) printf '运行环境初始化失败。\n' ;;
+      runtime_fallback) printf 'Steam 运行时不可用，这次在宿主机上直接运行 Proton，视频和音频解码等可能出问题。\n' ;;
     esac
   else
     case "$key" in
       start) printf 'Downloading %s...\n' "$product" ;;
-      progress) printf 'Still downloading %s...\n' "$product" ;;
       downloaded) printf '%s download completed. Extracting and installing...\n' "$product" ;;
       extracting) printf 'Extracting %s, please wait...\n' "$product" ;;
       done) printf '%s has been installed.\n' "$product" ;;
@@ -1121,6 +1145,7 @@ download_message() {
       timeout) printf '%s download timed out and was stopped.\n' "$product" ;;
       init) printf 'Setting up the runtime environment. The first run takes a few minutes...\n' ;;
       init_failed) printf 'Failed to set up the runtime environment.\n' ;;
+      runtime_fallback) printf 'The Steam Linux Runtime is not available; running Proton directly this time, so e.g. video and audio decoding may fail.\n' ;;
     esac
   fi
 }
@@ -1132,22 +1157,28 @@ run_download_command_with_notifications() {
   shift 2
 
   message="$(download_message start "$product")"
-  notify_download "$title" "$message"
+  notify_progress "$title" "$message"
   "$@" &
   pid=$!
-  (
-    while sleep "$DOWNLOAD_NOTIFY_INTERVAL"; do
-      kill -0 "$pid" >/dev/null 2>&1 || exit 0
-      message="$(download_message progress "$product")"
-      notify_download "$title" "$message"
-    done
-  ) &
-  notifier_pid=$!
+  notifier_pid=""
+  # Refresh the same notification so it stays up for the whole download.
+  # Without in-place updates every refresh would be a new notification.
+  if notify_available && notify_can_replace; then
+    (
+      while sleep "$DOWNLOAD_NOTIFY_INTERVAL"; do
+        kill -0 "$pid" >/dev/null 2>&1 || exit 0
+        notify_progress "$title" "$message"
+      done
+    ) &
+    notifier_pid=$!
+  fi
 
   status=0
   wait "$pid" || status=$?
-  kill "$notifier_pid" >/dev/null 2>&1 || true
-  wait "$notifier_pid" >/dev/null 2>&1 || true
+  if [[ -n "$notifier_pid" ]]; then
+    kill "$notifier_pid" >/dev/null 2>&1 || true
+    wait "$notifier_pid" >/dev/null 2>&1 || true
+  fi
   if [[ $status -eq 124 ]]; then
     message="$(download_message timeout "$product")"
     notify_download "$title" "$message"
@@ -1347,7 +1378,7 @@ install_runner() {
     if ! fetch_file "$checksum_url" "$work_dir/$checksum_name"; then
       return 1
     fi
-    notify_download "$title" "$(download_message downloaded "$product_name")"
+    notify_progress "$title" "$(download_message downloaded "$product_name")"
   fi
 
   if ! verify_archive "$work_dir" "$checksum_name"; then
@@ -1360,7 +1391,7 @@ install_runner() {
     return 1
   fi
 
-  notify_download "$title" "$(download_message extracting "$product_name")"
+  notify_progress "$title" "$(download_message extracting "$product_name")"
 
   # Extract next to the install target, not in /tmp: /tmp is usually a tmpfs
   # backed by RAM, and this keeps the final move a same-filesystem rename.
@@ -1592,10 +1623,153 @@ select_init_runner() {
   ensure_runner_product dw || die_install "failed to install runner: dw"
 }
 
+# ------------------------------------------------------------ Steam runtime
+# Proton is built for the Steam Linux Runtime container its toolmanifest.vdf
+# names. Run directly on the host its bundled libraries miss dependencies, e.g.
+# the GStreamer plugins Wine decodes WMA, WMV and H.264 with.
+
+# Steam directory, umu directory, download directory and archive of a runtime.
+runtime_info() {
+  case "$1" in
+    4183110) printf '%s\n' SteamLinuxRuntime_4 steamrt4 \
+      "https://repo.steampowered.com/steamrt4/images/latest-public-stable/" SteamLinuxRuntime_4.tar.xz ;;
+    1628350) printf '%s\n' SteamLinuxRuntime_sniper steamrt3 \
+      "https://repo.steampowered.com/steamrt-images-sniper/snapshots/latest-container-runtime-public-beta/" \
+      SteamLinuxRuntime_sniper.tar.xz ;;
+    *) return 1 ;;
+  esac
+}
+
+required_runtime_appid() {
+  local manifest appid
+  manifest="$(dirname "$1")/toolmanifest.vdf"
+  [[ -r "$manifest" ]] || return 1
+  appid="$(sed -n 's/.*"require_tool_appid"[[:space:]]*"\([0-9][0-9]*\)".*/\1/p' "$manifest" | head -n 1)"
+  [[ -n "$appid" ]] || return 1
+  printf '%s\n' "$appid"
+}
+
+# WE-Proton before release 10 was linked against host libraries the runtime
+# does not have; it only works run directly.
+runner_is_old_weproton() {
+  local label oldest="we-proton-11.0-14-10"
+  label="$(awk '{print $NF}' "$(dirname "$1")/version" 2>/dev/null || true)"
+  [[ "$label" == we-proton-* && "$label" != "$oldest" ]] || return 1
+  [[ "$(printf '%s\n' "$label" "$oldest" | sort -V | head -n 1)" == "$label" ]]
+}
+
+steam_library_roots() {
+  printf '%s\n' "$HOME/.local/share/Steam" "$HOME/.steam/root" "$HOME/.steam/steam" \
+    "$HOME/.var/app/com.valvesoftware.Steam/data/Steam"
+  read_steam_libraries
+}
+
+# An installed copy of the runtime: ours, umu's or Steam's.
+find_runtime() {
+  local info dir lib
+  mapfile -t info < <(runtime_info "$1") || return 1
+  [[ ${#info[@]} -eq 4 ]] || return 1
+  for dir in "$RUNTIME_DIR/${info[1]}" "$XDG_DATA_HOME_VALUE/umu/${info[1]}"; do
+    if [[ -f "$dir/_v2-entry-point" ]]; then
+      printf '%s\n' "$dir"
+      return 0
+    fi
+  done
+  while IFS= read -r lib; do
+    dir="$lib/steamapps/common/${info[0]}"
+    if [[ -f "$dir/_v2-entry-point" ]]; then
+      printf '%s\n' "$dir"
+      return 0
+    fi
+  done < <(steam_library_roots)
+  return 1
+}
+
+fetch_text() {
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL --connect-timeout 30 "$1"
+  else
+    wget -qO- --timeout=30 "$1"
+  fi
+}
+
+# Download the runtime from Valve into $RUNTIME_DIR, checked against SHA256SUMS.
+download_runtime() {
+  local info sums expected dest staging old_product title="Shorin Proton Wrapper" status=0
+  mapfile -t info < <(runtime_info "$1")
+  mkdir -p "$INSTALL_DOWNLOAD_DIR" "$RUNTIME_DIR"
+  if ! sums="$(fetch_text "${info[2]}SHA256SUMS")"; then
+    install_error "cannot fetch ${info[2]}SHA256SUMS"
+    return 1
+  fi
+  expected="$(awk -v f="${info[3]}" '{n = $NF; sub(/^\*/, "", n)} n == f {print $1; exit}' <<< "$sums")"
+  if [[ -z "$expected" ]]; then
+    install_error "no checksum for ${info[3]} in ${info[2]}SHA256SUMS"
+    return 1
+  fi
+
+  dest="$INSTALL_DOWNLOAD_DIR/${info[3]}"
+  old_product="${DOWNLOAD_NOTIFY_PRODUCT:-}"
+  DOWNLOAD_NOTIFY_PRODUCT="Steam Linux Runtime"
+  fetch_file "${info[2]}${info[3]}" "$dest" || status=$?
+  DOWNLOAD_NOTIFY_PRODUCT="$old_product"
+  [[ $status -eq 0 ]] || return 1
+  if [[ "$(sha256sum "$dest" | cut -d' ' -f1)" != "$expected" ]]; then
+    rm -f "$dest"
+    install_error "checksum verification failed: $dest
+The download is incomplete or corrupted. It has been discarded; run again to re-download."
+    return 1
+  fi
+
+  notify_progress "$title" "$(download_message extracting "Steam Linux Runtime")"
+  if ! staging="$(mktemp -d "$RUNTIME_DIR/.extract-XXXXXX")"; then
+    install_error "failed to create a work directory in: $RUNTIME_DIR"
+    return 1
+  fi
+  if ! tar -xJf "$dest" -C "$staging" || [[ ! -f "$staging/${info[0]}/_v2-entry-point" ]]; then
+    rm -rf "$staging"
+    install_error "failed to extract: $dest"
+    return 1
+  fi
+  rm -rf "${RUNTIME_DIR:?}/${info[1]}"
+  mv "$staging/${info[0]}" "$RUNTIME_DIR/${info[1]}"
+  rm -rf "$staging" "$dest"
+  notify_download "$title" "$(download_message done "Steam Linux Runtime")"
+}
+
+# Set RUNTIME_PREFIX to the command that runs this Proton inside its runtime,
+# downloading the runtime first if needed. It stays empty, and Proton runs
+# directly, when the runtime is turned off, the Proton asks for none we know,
+# or the runtime cannot be had.
+prepare_runtime() {
+  local runner="$1" verb="$2" appid runtime log status=0
+  RUNTIME_PREFIX=()
+  [[ "$RUNTIME_ENABLED" != 0 ]] || return 0
+  appid="$(required_runtime_appid "$runner")" || return 0
+  runtime_info "$appid" >/dev/null || return 0
+  if runner_is_old_weproton "$runner"; then
+    return 0
+  fi
+  if ! runtime="$(find_runtime "$appid")"; then
+    log="$WRAPPER_CACHE_DIR/logs/install-runtime.log"
+    mkdir -p "$(dirname "$log")"
+    : > "$log"
+    INSTALL_ERROR=""
+    download_runtime "$appid" > >(tee -a "$log" >&2) 2>&1 || status=$?
+    if [[ $status -ne 0 ]] || ! runtime="$(find_runtime "$appid")"; then
+      notify_error "$(download_message runtime_fallback "")"$'\n'"${INSTALL_ERROR:+$INSTALL_ERROR$'\n'}$log"
+      printf 'shorin-proton-wrapper: %s\n' "$(download_message runtime_fallback "")" >&2
+      return 0
+    fi
+  fi
+  RUNTIME_PREFIX=("$runtime/_v2-entry-point" "--verb=$verb" "--")
+}
+
 run_proton_command() {
   local runner="$1"
   shift
   validate_runner_arch "$runner"
+  prepare_runtime "$runner" "${1:-run}"
   mkdir -p "$PREFIX"
   prepare_mangohud_env
   env \
@@ -1609,13 +1783,14 @@ run_proton_command() {
     SteamGameId="${SteamGameId:-0}" \
     UMU_ID="${UMU_ID:-shorin-proton-wrapper}" \
     UMU_USE_STEAM="${UMU_USE_STEAM:-0}" \
-    "$runner" "$@"
+    "${RUNTIME_PREFIX[@]}" "$runner" "$@"
 }
 
 exec_proton_command() {
   local runner="$1"
   shift
   validate_runner_arch "$runner"
+  prepare_runtime "$runner" "${1:-run}"
   mkdir -p "$PREFIX"
   prepare_mangohud_env
   exec env \
@@ -1629,7 +1804,7 @@ exec_proton_command() {
     SteamGameId="${SteamGameId:-0}" \
     UMU_ID="${UMU_ID:-shorin-proton-wrapper}" \
     UMU_USE_STEAM="${UMU_USE_STEAM:-0}" \
-    "$runner" "$@"
+    "${RUNTIME_PREFIX[@]}" "$runner" "$@"
 }
 
 run_wine_command() {
@@ -1721,6 +1896,7 @@ run_gamescope_proton_command() {
   local runner="$1"
   shift
   validate_runner_arch "$runner"
+  prepare_runtime "$runner" "${1:-run}"
   mkdir -p "$PREFIX"
   build_gamescope_args
   prepare_mangohud_env
@@ -1735,7 +1911,7 @@ run_gamescope_proton_command() {
     SteamGameId="${SteamGameId:-0}" \
     UMU_ID="${UMU_ID:-shorin-proton-wrapper}" \
     UMU_USE_STEAM="${UMU_USE_STEAM:-0}" \
-    gamescope "${GAMESCOPE_ARGS[@]}" -- "$runner" "$@"
+    gamescope "${GAMESCOPE_ARGS[@]}" -- "${RUNTIME_PREFIX[@]}" "$runner" "$@"
 }
 
 run_gamescope_wine_command() {
@@ -1756,7 +1932,7 @@ init_prefix() {
   # launch looks dead between the runner install and the program window.
   log="$WRAPPER_CACHE_DIR/logs/init.log"
   mkdir -p "$(dirname "$log")"
-  notify_download "Shorin Proton Wrapper" "$(download_message init "")"
+  notify_progress "Shorin Proton Wrapper" "$(download_message init "")"
 
   status=0
   if [[ "$RESOLVED_RUNNER_TYPE" == "proton" ]]; then
@@ -2017,8 +2193,26 @@ run_target() {
   exit "$status"
 }
 
+# Where the runner would run: the runtime's path, or why it runs directly.
+runtime_status() {
+  local type="$1" runner="$2" appid runtime
+  if [[ "$type" != "proton" ]]; then
+    printf 'not used (wine runner)\n'
+  elif [[ "$RUNTIME_ENABLED" == 0 ]]; then
+    printf 'off (SHORIN_PROTON_WRAPPER_RUNTIME=0)\n'
+  elif ! appid="$(required_runtime_appid "$runner")" || ! runtime_info "$appid" >/dev/null; then
+    printf 'not used (the runner asks for none)\n'
+  elif runner_is_old_weproton "$runner"; then
+    printf 'not used (WE-Proton before release 10)\n'
+  elif runtime="$(find_runtime "$appid")"; then
+    printf '%s\n' "$runtime"
+  else
+    printf 'downloaded on first run (%s)\n' "$(runtime_info "$appid" | head -n 1)"
+  fi
+}
+
 show_status() {
-  local runner_type runner_path initialized install_dir download_dir lang
+  local runner_type runner_path initialized install_dir download_dir lang runtime
   PREFIX="$(expand_path "$PREFIX")"
   download_dir="$(expand_path "${DOWNLOAD_DIR:-$(xdg_download_dir)}")"
   install_dir="$(expand_path "${INSTALL_DIR:-$(default_install_dir)}")"
@@ -2035,6 +2229,7 @@ show_status() {
   if [[ -d "$PREFIX/pfx" ]]; then
     initialized="yes"
   fi
+  runtime="$(runtime_status "$runner_type" "$runner_path")"
 
   if [[ "$lang" == "zh" ]]; then
     [[ "$initialized" == "yes" ]] && initialized="是" || initialized="否"
@@ -2043,6 +2238,7 @@ show_status() {
     printf '已初始化:   %s\n' "$initialized"
     printf '运行器类型: %s\n' "$runner_type"
     printf '运行器:     %s\n' "$runner_path"
+    printf 'Steam 运行时: %s\n' "$runtime"
     printf '下载目录:   %s\n' "$download_dir"
     printf '安装目录:   %s\n' "$install_dir"
   else
@@ -2051,6 +2247,7 @@ show_status() {
     printf 'Initialized: %s\n' "$initialized"
     printf 'Runner type: %s\n' "$runner_type"
     printf 'Runner:      %s\n' "$runner_path"
+    printf 'Runtime:     %s\n' "$runtime"
     printf 'Download:    %s\n' "$download_dir"
     printf 'Install dir: %s\n' "$install_dir"
   fi
@@ -2137,9 +2334,16 @@ run_doctor() {
     doctor_status "32-bit cairo" unknown "install lib32-cairo on Arch if runners fail"
   fi
   if notify_available; then
-    doctor_status "desktop notify" ok
+    if notify_can_replace; then
+      doctor_status "desktop notify" ok
+    else
+      doctor_status "desktop notify" ok "notify-send cannot update a notification; only start and end are shown"
+    fi
   else
     doctor_status "desktop notify" unavailable "notifications will be skipped"
+  fi
+  if try_select_runner >/dev/null 2>&1; then
+    doctor_status "steam runtime" "$(runtime_status "$RESOLVED_RUNNER_TYPE" "$RESOLVED_RUNNER_PATH")"
   fi
 
   printf '\nRunners:\n'
