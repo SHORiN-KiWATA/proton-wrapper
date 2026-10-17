@@ -73,6 +73,12 @@ else
   SELF_PATH="$(command -v shorin-proton-wrapper || printf 'shorin-proton-wrapper')"
 fi
 
+# The host uid/gid, so a wrapper started inside the session can map the user
+# back to them: pasta shows the user as root in the session's user namespace.
+HOST_UID="${SHORIN_PROTON_WRAPPER_HOST_UID:-$(id -u)}"
+HOST_GID="${SHORIN_PROTON_WRAPPER_HOST_GID:-$(id -g)}"
+export SHORIN_PROTON_WRAPPER_HOST_UID="$HOST_UID" SHORIN_PROTON_WRAPPER_HOST_GID="$HOST_GID"
+
 RUNNER_TYPES=()
 RUNNER_SOURCES=()
 RUNNER_NAMES=()
@@ -578,7 +584,7 @@ runner_file_arch() {
   local binary info
   binary="$(runner_binary_for_path "$1" || true)"
   [[ -n "$binary" ]] || return 0
-  info="$(file -L -b "$binary" 2>/dev/null || true)"
+  info="$(env -u LD_PRELOAD file -L -b "$binary" 2>/dev/null || true)"
   case "$info" in
     *'ARM aarch64'*|*'ARM64'*) printf 'aarch64\n' ;;
     *'x86-64'*|*'x86_64'*|*'AMD x86-64'*) printf 'x86_64\n' ;;
@@ -2421,6 +2427,13 @@ session_prepare() {
     SESSION_NETNS="$(pid_netns "$keeper")"
     if [[ $inside -eq 0 ]]; then
       JOIN_PREFIX=(nsenter -t "$keeper" -U -n --preserve-credentials --)
+    fi
+    # pasta maps the user to root in the session; map Steam games back so the
+    # overlay's uid-named shared memory matches the Steam client's. Other
+    # Windows programs (accelerator clients) keep uid 0, which keeps
+    # CAP_NET_ADMIN for the TUN device they create in the namespace.
+    if [[ "$HOST_UID" -ne 0 && $STEAM_LAUNCH -eq 1 ]] && { [[ $inside -eq 0 ]] || [[ "$(id -u)" -eq 0 ]]; }; then
+      JOIN_PREFIX+=(unshare -U --map-user="$HOST_UID" --map-group="$HOST_GID" --)
     fi
     if [[ -n "$ws" ]]; then
       SESSION_SETTLE="joined"
