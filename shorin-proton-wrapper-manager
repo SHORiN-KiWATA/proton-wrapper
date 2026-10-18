@@ -39,6 +39,8 @@ TEXT = {
     "title": "Proton Wrapper 管理器" if ZH else "Proton Wrapper Manager",
     "prefix": "前置环境" if ZH else "Prefix",
     "runner": "运行器" if ZH else "Runner",
+    "program_args": "启动参数" if ZH else "Launch arguments",
+    "program_args_desc": "追加在程序路径后的命令行参数，例如 -krqlv=hd" if ZH else "Command-line arguments appended after the program path, e.g. -krqlv=hd",
     "exe": "执行文件" if ZH else "Executable",
     "browse": "浏览" if ZH else "Browse",
     "refresh": "刷新" if ZH else "Refresh",
@@ -86,7 +88,7 @@ TEXT = {
     "netns_missing": "没有安装 passt（pasta）" if ZH else "passt (pasta) is not installed",
     "resolution": "游戏分辨率" if ZH else "Game resolution",
     "fps": "帧率限制" if ZH else "Frame-rate limit",
-    "extra_args": "额外参数" if ZH else "Extra arguments",
+    "extra_args": "Gamescope 额外参数" if ZH else "Extra Gamescope arguments",
     "env_vars": "环境变量" if ZH else "Environment variables",
     "delete": "删除缓存" if ZH else "Delete Cache",
     "no_apps": "没有找到 Windows 快捷方式。" if ZH else "No Windows shortcuts found.",
@@ -798,6 +800,7 @@ def app_cache_entry(prefix: Path, app: dict[str, str]) -> dict[str, str]:
         "exe": app["path"],
         "prefix": app.get("prefix", str(prefix)),
         "runner": app.get("runner", ""),
+        "program_args": app.get("program_args", ""),
         "gamescope": app.get("gamescope", "0"),
         "gamescope_fullscreen": app.get("gamescope_fullscreen", "1"),
         "gamescope_res": app.get("gamescope_res", ""),
@@ -1617,6 +1620,7 @@ def scan_apps(prefix: Path) -> list[dict[str, str]]:
             "runner": entry.get("runner", ""),
             "prefix": entry.get("prefix", str(prefix)),
             "file": entry.get("file", ""),
+            "program_args": entry.get("program_args", ""),
             "gamescope": entry.get("gamescope", "0"),
             "gamescope_fullscreen": entry.get("gamescope_fullscreen", "1"),
             "gamescope_res": entry.get("gamescope_res", ""),
@@ -1859,7 +1863,7 @@ WINE_SESSION_PROCESSES = {
 }
 
 CONFIG_KEYS = (
-    "prefix", "runner", "gamescope", "gamescope_fullscreen", "gamescope_res", "gamescope_fps",
+    "prefix", "runner", "program_args", "gamescope", "gamescope_fullscreen", "gamescope_res", "gamescope_fps",
     "gamescope_fsr", "gamescope_args", "mangohud", "wayland", "env_vars",
 )
 
@@ -1974,8 +1978,9 @@ def write_cache_entry(entry: dict[str, str]) -> None:
         path = new_path
     entry["file"] = str(path)
     keys = [
-        "name", "exe", "prefix", "runner", "gamescope", "gamescope_fullscreen", "gamescope_res",
-        "gamescope_fps", "gamescope_fsr", "gamescope_args", "mangohud", "wayland", "env_vars", "source",
+        "name", "exe", "prefix", "runner", "program_args", "gamescope", "gamescope_fullscreen",
+        "gamescope_res", "gamescope_fps", "gamescope_fsr", "gamescope_args", "mangohud", "wayland",
+        "env_vars", "source",
     ]
     # a game the wrapper saw Steam start, which the manager starts through Steam
     if entry.get("steam_appid"):
@@ -3111,6 +3116,7 @@ class ManagerApp(Gtk.Application):
             "exe": exe_path,
             "prefix": str(prefix),
             "runner": prefix_runner(prefix) or preferred_runner_path(runners),
+            "program_args": "",
             "gamescope": "0",
             "gamescope_fullscreen": "1",
             "gamescope_res": "",
@@ -3275,6 +3281,7 @@ class ManagerApp(Gtk.Application):
             "exe": "",
             "prefix": str(prefix),
             "runner": prefix_runner(prefix) or preferred_runner_path(runners),
+            "program_args": "",
             "gamescope": "0",
             "gamescope_fullscreen": "1",
             "gamescope_res": "",
@@ -3358,6 +3365,12 @@ class ManagerApp(Gtk.Application):
         base_grid.attach(runner_field, 1, 2, 1, 1)
         widgets["runner"] = runner_field
 
+        add_entry(base_grid, 3, "program_args", TEXT["program_args"])
+        widgets["program_args"].set_placeholder_text("-krqlv=hd")
+        program_args_desc = Gtk.Label(label=TEXT["program_args_desc"], xalign=0, wrap=True)
+        program_args_desc.add_css_class("dim-label")
+        base_grid.attach(program_args_desc, 1, 4, 1, 1)
+
         gamescope_card = card(TEXT["gamescope"], TEXT["gamescope_desc"])
         gamescope_grid = Gtk.Grid(column_spacing=10, row_spacing=8)
         gamescope_card.append(gamescope_grid)
@@ -3421,6 +3434,7 @@ class ManagerApp(Gtk.Application):
             entry["exe"] = widgets["exe"].get_text().strip()
             entry["prefix"] = widgets["prefix"].get_text().strip()
             entry["runner"] = self.runner_combo_path(widgets["runner"])
+            entry["program_args"] = widgets["program_args"].get_text().strip()
             entry["gamescope_res"] = self.combo_entry_text(widgets["gamescope_res"])
             entry["gamescope_fps"] = self.combo_entry_text(widgets["gamescope_fps"])
             entry["gamescope_args"] = widgets["gamescope_args"].get_text().strip()

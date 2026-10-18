@@ -39,6 +39,8 @@ TEXT = {
     "program_desc": "将要运行的 Windows 程序" if ZH else "Windows program to run",
     "prefix_desc": "运行器会在此目录创建虚拟 C 盘，程序会在此环境中运行" if ZH else "The runner creates a virtual C drive here and runs the program in this environment",
     "runner_desc": "选择用于启动此程序的 Proton 或 Wine 运行器" if ZH else "Choose the Proton or Wine runner used to launch this program",
+    "program_args": "启动参数" if ZH else "Launch arguments",
+    "program_args_desc": "追加在程序路径后的命令行参数，例如 -krqlv=hd" if ZH else "Command-line arguments appended after the program path, e.g. -krqlv=hd",
     "run": "开始运行" if ZH else "Start",
     "reselect": "修改配置" if ZH else "Edit Config",
     "cancel": "取消" if ZH else "Cancel",
@@ -69,7 +71,7 @@ TEXT = {
     "downloading_runner": "正在下载并安装 {name}..." if ZH else "Downloading and installing {name}...",
     "download_wait": "下载和安装可能需要几分钟，请稍候" if ZH else "This may take a few minutes. Please wait",
     "download_failed": "下载或安装运行器失败。" if ZH else "Failed to download or install the runner.",
-    "extra_args": "额外参数" if ZH else "Extra arguments",
+    "extra_args": "Gamescope 额外参数" if ZH else "Extra Gamescope arguments",
     "extra_args_desc": "高级选项：直接追加到 gamescope 命令。" if ZH else "Advanced: appended directly to the gamescope command.",
     "invalid_resolution": "分辨率格式应为 宽x高，例如 1920x1080。" if ZH else "Resolution must be WIDTHxHEIGHT, e.g. 1920x1080.",
     "invalid_fps": "帧率必须是数字。" if ZH else "FPS must be a number.",
@@ -405,6 +407,7 @@ def read_cache(path: Path):
         return {
             "prefix": prefix,
             "runner": runner,
+            "program_args": data.get("program_args", ""),
             "gamescope": data.get("gamescope", "0"),
             "gamescope_fullscreen": data.get("gamescope_fullscreen", "1"),
             "gamescope_res": data.get("gamescope_res", ""),
@@ -433,6 +436,7 @@ def write_cache(path: Path, exe: Path, prefix: str, runner: str, options: dict):
         + f"exe={exe}\n"
         f"prefix={prefix}\n"
         f"runner={runner}\n"
+        f"program_args={options.get('program_args', '')}\n"
         f"gamescope={options.get('gamescope', '0')}\n"
         f"gamescope_fullscreen={options.get('gamescope_fullscreen', '1')}\n"
         f"gamescope_res={options.get('gamescope_res', '')}\n"
@@ -575,6 +579,7 @@ class SelectorApp(Gtk.Application):
         self.mangohud_available = has_mangohud()
         self.window = None
         self.exe_entry = None
+        self.program_args_entry = None
         self.prefix_entry = None
         self.selected_runner = None
         self.selected_runner_install_id = None
@@ -749,6 +754,13 @@ class SelectorApp(Gtk.Application):
         runner_card.append(runner)
         content.append(runner_card)
 
+        if cache.get("program_args"):
+            program_args_card = card(TEXT["program_args"])
+            program_args = Gtk.Label(label=cache["program_args"], xalign=0, wrap=True)
+            program_args.add_css_class("dim-label")
+            program_args_card.append(program_args)
+            content.append(program_args_card)
+
         gamescope_card = card(TEXT["gamescope"])
         gamescope = Gtk.Label(label=gamescope_summary(cache), xalign=0, wrap=True)
         gamescope.add_css_class("dim-label")
@@ -809,6 +821,18 @@ class SelectorApp(Gtk.Application):
         exe_box.append(self.exe_entry)
         exe_box.append(exe_browse)
         exe_card.append(exe_box)
+
+        args_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        args_label = Gtk.Label(label=TEXT["program_args"], xalign=0)
+        args_label.set_size_request(88, -1)
+        self.program_args_entry = Gtk.Entry(placeholder_text="-krqlv=hd", hexpand=True)
+        self.program_args_entry.set_text((initial or {}).get("program_args", ""))
+        args_box.append(args_label)
+        args_box.append(self.program_args_entry)
+        exe_card.append(args_box)
+        args_desc = Gtk.Label(label=TEXT["program_args_desc"], xalign=0, wrap=True)
+        args_desc.add_css_class("dim-label")
+        exe_card.append(args_desc)
         outer.append(exe_card)
 
         prefix_card = card(TEXT["prefix"], TEXT["prefix_desc"])
@@ -1105,6 +1129,7 @@ class SelectorApp(Gtk.Application):
                 self.show_error(TEXT["invalid_fps"])
                 return None
         return {
+            "program_args": self.program_args_entry.get_text().strip() if self.program_args_entry else "",
             "gamescope": "1" if enabled else "0",
             "gamescope_fullscreen": "1" if self.fullscreen_check and self.fullscreen_check.get_active() else "0",
             "gamescope_res": res or "",
