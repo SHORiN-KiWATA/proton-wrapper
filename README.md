@@ -53,7 +53,7 @@ sudo install -Dm644 icons/shorin-proton.png /usr/local/share/icons/hicolor/512x5
 
 >`shorin-proton-wrapper-configure`
 
-为了兼顾自由度，我额外做了一个名为 `设置Windows程序运行环境` 的打开方式。支持自定义前置环境目录、Proton 版本、MangoHud、GameScope 等常用设置项。
+为了兼顾自由度，我额外做了一个名为 `设置Windows程序运行环境` 的打开方式。支持自定义前置环境目录、Proton 版本、MangoHud、GameScope 等常用设置项。`启动参数` 会追加在程序路径之后，例如鸣潮指定画质用的 `-krqlv=hd`。
 
 ![](./pics/2.png)
 
@@ -109,7 +109,7 @@ shorin-proton-wrapper %command%
 
 >`shorin-proton-wrapper-manager`
 
-每次运行 exe 都会自动进入管理器的仓库，通过 `icoextract` `python-pillow` 生成缩略图。支持导出程序到 Linux 应用菜单、重命名显示名称和 `.desktop` 名称、修改配置等功能。
+每次运行 exe 都会自动进入管理器的仓库，通过 `icoextract` `python-pillow` 生成缩略图。支持导出程序到 Linux 应用菜单、重命名显示名称和 `.desktop` 名称、修改配置等功能；配置里的 `启动参数` 会追加在程序路径之后。
 
 应用、目录和进程页面都可以搜索：在窗口里直接打字或按 Ctrl+F 开始，Esc 清空。应用列表来自前置环境的开始菜单和桌面快捷方式，同一个程序只列一次；最近运行过的排在前面，卸载程序和目标已不存在的快捷方式排在最后。
 

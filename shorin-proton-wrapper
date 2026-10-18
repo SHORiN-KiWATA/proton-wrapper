@@ -1915,19 +1915,22 @@ prepare_mangohud_env() {
   MANGOHUD_ENV=("MANGOHUD=1")
 }
 
-append_gamescope_extra_args() {
-  local extra="$1" tmp err status
-  [[ -n "$extra" ]] || return 0
+# Split a shell-style argument string into PARSED_ARGS, one element per
+# argument, without eval. A malformed quote is reported as an error.
+parse_argument_string() {
+  local value="$1" kind="$2" tmp err status
+  PARSED_ARGS=()
+  [[ -n "$value" ]] || return 0
   tmp="$(mktemp)"
   err="$(mktemp)"
-  python3 - "$extra" > "$tmp" 2> "$err" <<'PY'
+  python3 - "$value" "$kind" > "$tmp" 2> "$err" <<'PY'
 import shlex
 import sys
 
 try:
     args = shlex.split(sys.argv[1])
 except ValueError as exc:
-    raise SystemExit(f"invalid Gamescope arguments: {exc}")
+    raise SystemExit(f"invalid {sys.argv[2]}: {exc}")
 
 for arg in args:
     sys.stdout.write(arg)
@@ -1938,11 +1941,28 @@ PY
     local message
     message="$(<"$err")"
     rm -f "$tmp" "$err"
-    die "${message:-invalid Gamescope arguments: $extra}"
+    die "${message:-invalid ${kind}: $value}"
   fi
-  mapfile -d '' -t GAMESCOPE_EXTRA_ARGS < "$tmp"
+  mapfile -d '' -t PARSED_ARGS < "$tmp"
   rm -f "$tmp" "$err"
-  GAMESCOPE_ARGS+=("${GAMESCOPE_EXTRA_ARGS[@]}")
+}
+
+append_gamescope_extra_args() {
+  local extra="$1"
+  [[ -n "$extra" ]] || return 0
+  parse_argument_string "$extra" "Gamescope arguments"
+  if [[ ${#PARSED_ARGS[@]} -gt 0 ]]; then
+    GAMESCOPE_ARGS+=("${PARSED_ARGS[@]}")
+  fi
+}
+
+apply_cached_program_args() {
+  local extra="$1"
+  [[ -n "$extra" ]] || return 0
+  parse_argument_string "$extra" "program arguments"
+  if [[ ${#PARSED_ARGS[@]} -gt 0 ]]; then
+    TARGET_ARGS=("${PARSED_ARGS[@]}" "${TARGET_ARGS[@]}")
+  fi
 }
 
 build_gamescope_args() {
@@ -2647,6 +2667,7 @@ record_new_association() {
 exe=$target_path
 prefix=$PREFIX
 runner=$RESOLVED_RUNNER_PATH
+program_args=
 gamescope=$GAMESCOPE
 gamescope_fullscreen=$GAMESCOPE_FULLSCREEN
 gamescope_res=$GAMESCOPE_RES
@@ -2664,6 +2685,7 @@ apply_cached_association() {
   local target_path="$1" cache_dir key cache_file line name value
   local cache_prefix="" cache_runner="" cache_runner_valid="0" cache_gamescope="0" cache_fullscreen="1"
   local cache_res="" cache_fps="" cache_fsr="0" cache_args="" cache_mangohud="0" cache_wayland="0" cache_env_vars=""
+  local cache_program_args=""
 
   cache_file="$(association_cache_file_for "$target_path")"
   [[ -r "$cache_file" ]] || return 0
@@ -2675,6 +2697,7 @@ apply_cached_association() {
     case "$name" in
       prefix) cache_prefix="$value" ;;
       runner) cache_runner="$value" ;;
+      program_args) cache_program_args="$value" ;;
       gamescope) cache_gamescope="$value" ;;
       gamescope_fullscreen) cache_fullscreen="$value" ;;
       gamescope_res) cache_res="$value" ;;
@@ -2726,6 +2749,7 @@ apply_cached_association() {
     WAYLAND="$cache_wayland"
   fi
   apply_cached_env_vars "$cache_env_vars"
+  apply_cached_program_args "$cache_program_args"
 }
 
 open_winecfg() {
