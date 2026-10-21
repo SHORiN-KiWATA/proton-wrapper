@@ -1923,7 +1923,8 @@ parse_argument_string() {
   [[ -n "$value" ]] || return 0
   tmp="$(mktemp)"
   err="$(mktemp)"
-  python3 - "$value" "$kind" > "$tmp" 2> "$err" <<'PY'
+  status=0
+  python3 - "$value" "$kind" > "$tmp" 2> "$err" <<'PY' || status=$?
 import shlex
 import sys
 
@@ -1936,12 +1937,11 @@ for arg in args:
     sys.stdout.write(arg)
     sys.stdout.write("\0")
 PY
-  status=$?
   if [[ $status -ne 0 ]]; then
     local message
     message="$(<"$err")"
     rm -f "$tmp" "$err"
-    die "${message:-invalid ${kind}: $value}"
+    die_visible "${message:-invalid ${kind}: $value}"
   fi
   mapfile -d '' -t PARSED_ARGS < "$tmp"
   rm -f "$tmp" "$err"
@@ -2285,13 +2285,17 @@ namespace_mac_address() {
 
 # Start the prefix's network namespace and its keeper; sets SESSION_KEEPER_PID.
 session_start() {
-  local dir="$1" log mac i
+  local dir="$1" log mac i pidns
   command -v pasta > /dev/null 2>&1 || die_visible "$(session_message no_pasta)"
   command -v nsenter > /dev/null 2>&1 || die_visible "$(session_message no_nsenter)"
   rm -f "$dir/keeper.pid" "$dir/netns" "$dir/userns" "$dir/bus" "$dir/launch"
   log="$WRAPPER_CACHE_DIR/logs/session-$(basename "$dir").log"
   mkdir -p "$(dirname "$log")"
   mac="$(namespace_mac_address)"
+  # newer pasta starts the command in a new PID namespace unless told not to;
+  # older ones never do and don't know the option
+  pidns=()
+  [[ "$(pasta --help 2>&1 || true)" == *--no-pidns* ]] && pidns=(--no-pidns)
   printf -- '--- %s %s\n' "$(date '+%F %T')" "$PREFIX" >> "$log"
   # pasta forwards automatically only the host's ports outside the ephemeral
   # range; the Steam client's 57343, in it, the keeper forwards itself while
@@ -2299,7 +2303,7 @@ session_start() {
   # LD_PRELOAD, which the namespace's own programs must not get.
   setsid env -u SHORIN_PROTON_WRAPPER_APP_ID -u SHORIN_PROTON_WRAPPER_APP_PATH -u SHORIN_PROTON_WRAPPER_LOG -u LD_PRELOAD \
     SHORIN_PROTON_WRAPPER_PREFIX="$PREFIX" \
-    pasta --config-net --ns-mac-addr "$mac" -T auto -f --no-pidns -- "$SELF_PATH" --session-keeper "$dir" \
+    pasta --config-net --ns-mac-addr "$mac" -T auto -f "${pidns[@]}" -- "$SELF_PATH" --session-keeper "$dir" \
     >> "$log" 2>&1 < /dev/null {SESSION_LOCK_FD}>&- &
   for ((i = 0; i < 75; i++)); do
     if SESSION_KEEPER_PID="$(session_keeper_pid "$dir")"; then
