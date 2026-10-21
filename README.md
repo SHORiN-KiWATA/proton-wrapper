@@ -24,7 +24,7 @@ Proton 会放进它要求的 Steam Linux Runtime 容器里运行（WE-Proton、D
 
 依赖：`bash` `python` `python-gobject` `gtk4` `curl` `icoextract` `python-pillow`
 
-可选：`gamescope` `passt`（独立网络） `mangohud` `libnotify`（通知） `wget` `steam` `lutris` `lib32-cairo`（`PROTON_USE_WOW64=0` 时）
+可选：`gamescope` `passt`（独立网络） `gcc`（独立网络里的 Steam 覆盖层） `mangohud` `libnotify`（通知） `wget` `steam` `lutris` `lib32-cairo`（`PROTON_USE_WOW64=0` 时）
 
 Debian / Ubuntu / Fedora 从 [Releases](https://github.com/SHORiN-KiWATA/proton-wrapper/releases/latest) 下载安装包，依赖会一并装上：
 
@@ -89,6 +89,7 @@ shorin-proton-wrapper -p 前置环境 curl https://store.steampowered.com
 
 - 它以当前用户的身份运行（独立网络里其他程序看到的是 root，Steam 这类程序不肯以 root 运行）；前置环境没开独立网络时直接运行；
 - 用这种方式启动的 Steam 整个在独立网络里，要先退出已经开着的 Steam（Steam 只能开一个）。它启动的 Windows 游戏照样用 `shorin-proton-wrapper %command%`，会加入同一个前置环境的会话；
+- 独立网络里的 Steam 游戏照样有 Steam 覆盖层，不管 Steam 在独立网络里还是外面。覆盖层要靠一个小辅助库，wrapper 第一次用到时用系统的 C 编译器（`cc`，Arch 上装 `gcc`）编译；没有编译器时游戏照常运行，只是没有覆盖层；
 - 加速器自己决定接管哪些连接。例如网易 UU 的 Steam 加速只放行商店和社区的域名，在海外使用时，和它们共用 IP 的商店图片、脚本会被断开，商店页面加载不出来。
 
 ## Steam 游戏

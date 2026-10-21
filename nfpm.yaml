@@ -34,6 +34,8 @@ overrides:
   deb:
     depends: [bash, python3, python3-gi, gir1.2-gtk-4.0, curl, python3-pil]
     recommends: [gamescope, icoextract, passt, mangohud, libnotify-bin, wget]
+    suggests: [gcc]
   rpm:
     depends: [bash, python3, python3-gobject, gobject-introspection, gtk4, curl, python3-pillow]
     recommends: [gamescope, python3-icoextract, passt, mangohud, libnotify, wget]
+    suggests: [gcc]

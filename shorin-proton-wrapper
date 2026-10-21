@@ -1915,6 +1915,140 @@ prepare_mangohud_env() {
   MANGOHUD_ENV=("MANGOHUD=1")
 }
 
+# A Steam game in a session's namespace runs as root there, while the Steam
+# client runs as the user: Steam's overlay in the game names what it shares
+# with the client after getuid() (/dev/shm/u<uid>-ValveIPCSharedObj-Steam and
+# the like), so the two never meet. A small library preloaded after the
+# overlay gives the overlay, and only it, the user's uid; Wine and the rest of
+# the game keep root, the wineserver and the accelerator's TUN adapter with it.
+# It is built with the system's C compiler the first time it is needed.
+OVERLAY_UID_ENV=()
+
+# The uid the current user has outside any user namespace.
+host_uid() {
+  local uid inside outside count
+  uid="$(id -u)"
+  while read -r inside outside count; do
+    if (( uid >= inside && uid < inside + count )); then
+      printf '%s\n' "$(( outside + uid - inside ))"
+      return 0
+    fi
+  done < /proc/self/uid_map
+  printf '%s\n' "$uid"
+}
+
+build_overlay_uid_library() {
+  local out="$1" bits="$2" tmp
+  [[ -e "$out" ]] && return 0
+  [[ -e "$out.failed" ]] && return 1
+  mkdir -p "$(dirname "$out")"
+  tmp="$(mktemp "$out.XXXXXX")"
+  if cc "-m$bits" -shared -fPIC -O2 -fno-stack-protector -U_FORTIFY_SOURCE -x c - -o "$tmp" \
+      > /dev/null 2>&1 <<'C'
+/* Preloaded into a Steam game run in a session's network namespace, where the
+ * user is root: Steam's overlay names what it shares with the Steam client
+ * after getuid(), so it answers the overlay with the user the client runs as.
+ * Every other caller, Wine among them, gets the real uid. */
+#define _GNU_SOURCE
+#include <link.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+static uintptr_t overlay_start, overlay_end;
+
+static int find_overlay(struct dl_phdr_info *info, size_t size, void *data)
+{
+    const char *name = info->dlpi_name;
+    uintptr_t start = UINTPTR_MAX, end = 0;
+    int i;
+
+    (void)size;
+    (void)data;
+    if (!name || !strstr(name, "/gameoverlayrenderer.so"))
+        return 0;
+    for (i = 0; i < info->dlpi_phnum; i++) {
+        const ElfW(Phdr) *phdr = &info->dlpi_phdr[i];
+        if (phdr->p_type != PT_LOAD)
+            continue;
+        if (info->dlpi_addr + phdr->p_vaddr < start)
+            start = info->dlpi_addr + phdr->p_vaddr;
+        if (info->dlpi_addr + phdr->p_vaddr + phdr->p_memsz > end)
+            end = info->dlpi_addr + phdr->p_vaddr + phdr->p_memsz;
+    }
+    if (end) {
+        overlay_start = start;
+        overlay_end = end;
+    }
+    return 1;
+}
+
+static long overlay_uid(void)
+{
+    const char *value = getenv("SHORIN_PROTON_WRAPPER_OVERLAY_UID");
+    long uid = 0;
+
+    if (!value || !*value)
+        return -1;
+    for (; *value; value++) {
+        if (*value < '0' || *value > '9')
+            return -1;
+        uid = uid * 10 + (*value - '0');
+    }
+    return uid;
+}
+
+uid_t getuid(void)
+{
+    uintptr_t caller = (uintptr_t)__builtin_return_address(0);
+    long uid;
+
+    if (!overlay_end)
+        dl_iterate_phdr(find_overlay, NULL);
+    if (caller >= overlay_start && caller < overlay_end && (uid = overlay_uid()) >= 0)
+        return (uid_t)uid;
+    return (uid_t)syscall(SYS_getuid);
+}
+C
+  then
+    mv -f "$tmp" "$out"
+  else
+    rm -f "$tmp"
+    touch "$out.failed"
+    return 1
+  fi
+}
+
+prepare_overlay_uid() {
+  local dir key lib bits libs=()
+  OVERLAY_UID_ENV=()
+  [[ -n "$SESSION_NETNS" && "${LD_PRELOAD:-}" == *gameoverlayrenderer.so* ]] || return 0
+  if ! command -v cc > /dev/null 2>&1; then
+    printf 'Session: no C compiler (cc), Steam overlay stays off in the separate network\n'
+    return 0
+  fi
+  key="$(declare -f build_overlay_uid_library | sha256sum | cut -c1-12)"
+  dir="$WRAPPER_CACHE_DIR/overlay-uid/$key"
+  # the 32-bit one only where a 32-bit C library is installed; the loader
+  # skips the one of the other word size
+  for bits in 64 32; do
+    lib="$dir/overlay-uid-$bits.so"
+    if build_overlay_uid_library "$lib" "$bits"; then
+      libs+=("$lib")
+    fi
+  done
+  if (( ${#libs[@]} == 0 )); then
+    printf 'Session: building the Steam overlay helper failed, the overlay stays off in the separate network\n'
+    return 0
+  fi
+  OVERLAY_UID_ENV=(
+    "LD_PRELOAD=$LD_PRELOAD$(printf ':%s' "${libs[@]}")"
+    "SHORIN_PROTON_WRAPPER_OVERLAY_UID=$(host_uid)"
+  )
+}
+
 # Split a shell-style argument string into PARSED_ARGS, one element per
 # argument, without eval. A malformed quote is reported as an error.
 parse_argument_string() {
@@ -2027,6 +2161,8 @@ build_launch_command() {
     fi
   fi
   env_args+=("${SESSION_ENV[@]}")
+  prepare_overlay_uid
+  env_args+=("${OVERLAY_UID_ENV[@]}")
   if [[ "$type" == "proton" ]]; then
     prepare_runtime "$runner" "${1:-run}"
     mkdir -p "$PREFIX"
@@ -3255,6 +3391,7 @@ run_doctor() {
   doctor_command "notify-send" notify-send
   doctor_command "pasta (netns)" pasta
   doctor_command "nsenter (netns)" nsenter
+  doctor_command "cc (netns overlay)" cc
   doctor_command "flock" flock
   doctor_gtk
   doctor_python_module "PyGObject" gi
