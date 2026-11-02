@@ -3068,7 +3068,9 @@ prepare_mapped_drive_target() {
     fi
   fi
   letter="$(drive_letter_for "$source_dir")" || die "no free Wine drive letter found for: $source_dir"
-  workdir="$PREFIX/pfx/drive_c"
+  # it starts in its own folder, as on Windows: a game may look for its
+  # steam_api64.dll settings and the like there
+  workdir="$(dirname "$target_path")"
   exe="${letter}:\\$base"
 }
 
