@@ -2946,10 +2946,13 @@ drive_map_remove() {
 # Drop our letters for folders inside root. Wine names a path by the deepest
 # drive it is on, so such a letter would take a program out of root's drive:
 # a launcher in it would no longer find the game it starts in the folder above.
+# While programs run in the prefix, only the letters of the folders the
+# program is in go: the others may be the drives of the running ones.
 drive_map_drop_inside() {
-  local root="$1" letter folder _
+  local root="$1" target_path="$2" letter folder _
   while IFS=$'\t' read -r letter folder _; do
     [[ " $DRIVE_LETTERS " == *" $letter "* && "$folder" == "$root/"* ]] || continue
+    [[ $SESSION_ACTIVE -eq 0 || "$target_path" == "$folder/"* ]] || continue
     if [[ "$(realpath -m "$PREFIX/pfx/dosdevices/$letter:")" == "$folder" ]]; then
       rm -f "$PREFIX/pfx/dosdevices/$letter:"
     fi
@@ -2964,6 +2967,23 @@ steam_install_folder() {
   [[ "$path" == */steamapps/common/*/* ]] || return 1
   rest="${path#*/steamapps/common/}"
   printf '%s/steamapps/common/%s\n' "${path%%/steamapps/common/*}" "${rest%%/*}"
+}
+
+# Any other program's drive is the top folder it is in below the home or the
+# disk it is on, ~/Games say, as a game on Windows sits in a folder of a drive.
+# A launcher may start its game anywhere up to there, ..\platform\Game.exe,
+# which a drive rooted at the launcher's own folder would cut off.
+library_folder() {
+  local path base rest
+  path="$(realpath -m "$1")"
+  base="$(realpath -m "${HOME:-/nonexistent}")"
+  if [[ "$path" != "$base/"* ]]; then
+    base="$(stat -c %m -- "$path" 2> /dev/null)" || return 1
+  fi
+  base="${base%/}"
+  rest="${path#"$base"/}"
+  [[ "$rest" == */* ]] || return 1
+  printf '%s/%s\n' "$base" "${rest%%/*}"
 }
 
 # The single letter used before every folder got its own.
@@ -3044,7 +3064,7 @@ prepare_mapped_drive_target() {
       source_dir="$root"
       base="${target_path#"$root/"}"
       base="${base//\//\\}"
-      drive_map_drop_inside "$root"
+      drive_map_drop_inside "$root" "$target_path"
     fi
   fi
   letter="$(drive_letter_for "$source_dir")" || die "no free Wine drive letter found for: $source_dir"
@@ -3200,7 +3220,7 @@ run_target() {
         prepare_mapped_drive_target "$TARGET" "${STEAM_COMPAT_INSTALL_PATH:-$(steam_install_folder "$TARGET" || true)}"
         workdir="$steam_dir"
       else
-        prepare_mapped_drive_target "$TARGET" "$(steam_install_folder "$TARGET" || true)"
+        prepare_mapped_drive_target "$TARGET" "$(steam_install_folder "$TARGET" || library_folder "$TARGET" || true)"
       fi
       cd "$workdir"
       if [[ "$RESOLVED_RUNNER_TYPE" == "proton" ]]; then
