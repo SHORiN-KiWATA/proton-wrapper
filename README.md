@@ -18,7 +18,9 @@ Proton 会放进它要求的 Steam Linux Runtime 容器里运行（WE-Proton、D
 
 32 位程序默认用 Wine 的新 WoW64 模式运行（`PROTON_USE_WOW64=1`），不需要安装 32 位系统库。个别 32 位程序有问题时，可以在它的配置里把环境变量设成 `PROTON_USE_WOW64=0`。
 
-可调环境变量：`SHORIN_PROTON_WRAPPER_DOWNLOAD_STALL`（卡死判定秒数，默认 120）、`SHORIN_PROTON_WRAPPER_DOWNLOAD_TIMEOUT`（下载总时长上限秒数，默认 0 表示不限制）、`SHORIN_PROTON_WRAPPER_RUNTIME`（设为 0 时不用 Steam 运行时，直接在宿主机上运行 Proton）。
+Proton 自带的 VC++ 运行库是 Wine 的实现，有些游戏不认，会提示 Microsoft Visual C++ 运行库未安装。所以和 Steam 一样，前置环境里会装上微软的 VC++ 运行库（x64 和 x86），有新版本时自动升级：优先用 Steam 的 `Steamworks Shared/_CommonRedist` 里那份，没有就从微软下载到 `~/.cache/shorin-proton-wrapper/downloads/vcredist`，每 30 天更新一次。安装日志在 `~/.cache/shorin-proton-wrapper/logs/vcredist.log`。某个运行器装失败后，同一版本不会再用它重试；可以换原版 Proton 或 Wine 运行器打开一次这个前置环境，让它装上。
+
+可调环境变量：`SHORIN_PROTON_WRAPPER_DOWNLOAD_STALL`（卡死判定秒数，默认 120）、`SHORIN_PROTON_WRAPPER_DOWNLOAD_TIMEOUT`（下载总时长上限秒数，默认 0 表示不限制）、`SHORIN_PROTON_WRAPPER_RUNTIME`（设为 0 时不用 Steam 运行时，直接在宿主机上运行 Proton）、`SHORIN_PROTON_WRAPPER_VCREDIST`（设为 0 时不安装 VC++ 运行库）。
 
 ## 安装
 

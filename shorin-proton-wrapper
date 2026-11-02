@@ -21,6 +21,11 @@ STEAM_ROOT="${STEAM_COMPAT_CLIENT_INSTALL_PATH:-$HOME/.steam/root}"
 RUNTIME_ENABLED="${SHORIN_PROTON_WRAPPER_RUNTIME:-1}"
 RUNTIME_DIR="$XDG_DATA_HOME_VALUE/shorin-proton-wrapper/runtime"
 RUNTIME_PREFIX=()
+# Prefixes get Microsoft's Visual C++ runtime, as Steam gives its games;
+# set SHORIN_PROTON_WRAPPER_VCREDIST=0 to leave them with Wine's.
+VCREDIST_ENABLED="${SHORIN_PROTON_WRAPPER_VCREDIST:-1}"
+VCREDIST_URL="https://aka.ms/vc14/vc_redist"
+VCREDIST_REFRESH_DAYS=30
 
 # 0 means no total cap: a slow but healthy download must not be killed.
 # Stalled transfers are caught by DOWNLOAD_STALL_SECONDS instead.
@@ -1193,6 +1198,8 @@ download_message() {
       init) printf '正在初始化运行环境，首次运行需要几分钟...\n' ;;
       init_failed) printf '运行环境初始化失败。\n' ;;
       runtime_fallback) printf 'Steam 运行时不可用，这次在宿主机上直接运行 Proton，视频和音频解码等可能出问题。\n' ;;
+      vcredist) printf '正在给运行环境安装 Microsoft Visual C++ 运行库 %s...\n' "$product" ;;
+      vcredist_failed) printf 'Microsoft Visual C++ 运行库 %s 没能装上，这个运行器下次不再尝试。\n' "$product" ;;
     esac
   else
     case "$key" in
@@ -1205,6 +1212,8 @@ download_message() {
       init) printf 'Setting up the runtime environment. The first run takes a few minutes...\n' ;;
       init_failed) printf 'Failed to set up the runtime environment.\n' ;;
       runtime_fallback) printf 'The Steam Linux Runtime is not available; running Proton directly this time, so e.g. video and audio decoding may fail.\n' ;;
+      vcredist) printf 'Installing the Microsoft Visual C++ runtime %s into the runtime environment...\n' "$product" ;;
+      vcredist_failed) printf 'The Microsoft Visual C++ runtime %s could not be installed; this runner will not try again.\n' "$product" ;;
     esac
   fi
 }
@@ -2733,6 +2742,144 @@ ensure_initialized() {
   fi
 }
 
+# Many Windows games need Microsoft's Visual C++ runtime. Proton brings Wine's
+# own msvcp140 and the like and claims the runtime in the registry, which some
+# games see through ("Microsoft Visual C++ runtime is not installed"). Steam
+# installs Microsoft's into a game's prefix before the game first runs; the
+# wrapper does the same for a prefix whenever its registry has an older one
+# than the installers: Steam's, kept current by Steam, or else Microsoft's,
+# downloaded again once VCREDIST_REFRESH_DAYS old.
+
+# Steam's installers, from its Steamworks Common Redistributables.
+steam_vcredist_dir() {
+  local lib dir
+  while IFS= read -r lib; do
+    dir="$lib/steamapps/common/Steamworks Shared/_CommonRedist/vcredist/2022"
+    if [[ -s "$dir/VC_redist.x64.exe" && -s "$dir/VC_redist.x86.exe" ]]; then
+      printf '%s\n' "$dir"
+      return 0
+    fi
+  done < <(steam_library_roots)
+  return 1
+}
+
+# Microsoft's installers, downloaded into the wrapper's cache. A stale one
+# stays in use while a newer one cannot be had.
+download_vcredist() {
+  local dir="$INSTALL_DOWNLOAD_DIR/vcredist" arch file DOWNLOAD_NOTIFY_PRODUCT
+  mkdir -p "$dir"
+  for arch in x64 x86; do
+    file="$dir/VC_redist.$arch.exe"
+    DOWNLOAD_NOTIFY_PRODUCT="Microsoft Visual C++ ($arch)"
+    if [[ ! -s "$file" ]]; then
+      fetch_file "$VCREDIST_URL.$arch.exe" "$file" >&2 || return 1
+    elif [[ -n "$(find "$file" -mtime +"$VCREDIST_REFRESH_DAYS" 2> /dev/null)" ]]; then
+      if fetch_file "$VCREDIST_URL.$arch.exe" "$file.new" >&2; then
+        mv "$file.new" "$file"
+      fi
+    fi
+  done
+  printf '%s\n' "$dir"
+}
+
+# The ProductVersion of a Windows program, 14.51.36247.0 say.
+pe_product_version() {
+  python3 - "$1" <<'PY'
+import sys
+
+key = "ProductVersion\0".encode("utf-16-le")
+with open(sys.argv[1], "rb") as file:
+    data = file.read()
+start = data.find(key)
+if start < 0:
+    sys.exit(1)
+start += len(key)
+start += -start % 4
+end = start
+while data[end:end + 2] != b"\0\0":
+    end += 2
+print(data[start:end].decode("utf-16-le"))
+PY
+}
+
+# The runtime of an architecture in the prefix's registry as Microsoft's
+# installer writes it, v14.51.36247.00; Wine's claim lacks the v.
+prefix_vcredist_version() {
+  local key
+  case "$1" in
+    x64) key='[Software\\Microsoft\\VisualStudio\\14.0\\VC\\Runtimes\\x64]' ;;
+    x86) key='[Software\\Wow6432Node\\Microsoft\\VisualStudio\\14.0\\VC\\Runtimes\\x86]' ;;
+  esac
+  KEY="$key" awk '
+    index($0, ENVIRON["KEY"]) == 1 { inside = 1; next }
+    /^\[/ { inside = 0 }
+    inside && /^"Version"="v/ { sub(/^"Version"="v/, ""); sub(/"$/, ""); print; exit }
+  ' "$PREFIX/pfx/system.reg" 2> /dev/null
+}
+
+# Whether the prefix has the runtime of version for both architectures, or a
+# newer one. The last field differs in form (0 and 00) and is left out.
+prefix_has_vcredist() {
+  local want="${1%.*}" arch have
+  for arch in x64 x86; do
+    have="$(prefix_vcredist_version "$arch")"
+    have="${have%.*}"
+    [[ -n "$have" ]] && ! version_newer "$have" "$want" || return 1
+  done
+}
+
+# A runner whose install failed is not asked again for that version: it may
+# never manage, a runner that injects into every program say.
+vcredist_failed_file() {
+  printf '%s/.shorin-proton-wrapper-vcredist-failed\n' "$PREFIX"
+}
+
+ensure_vcredist() {
+  local dir version failed arch status log
+  [[ "$VCREDIST_ENABLED" != 0 && -r "$PREFIX/pfx/system.reg" ]] || return 0
+  # a 32-bit prefix of a Wine runner has no place for the x64 runtime
+  ! grep -q '^#arch=win32' "$PREFIX/pfx/system.reg" || return 0
+  if ! dir="$(steam_vcredist_dir)" && ! dir="$(download_vcredist)"; then
+    printf 'VC++ runtime: no installer to be had, trying again next time\n' >&2
+    return 0
+  fi
+  version="$(pe_product_version "$dir/VC_redist.x64.exe")" || return 0
+  prefix_has_vcredist "$version" && return 0
+  failed="$(cat "$(vcredist_failed_file)" 2> /dev/null || true)"
+  [[ "$failed" != "$version $RESOLVED_RUNNER_PATH" ]] || return 0
+  # installing beside running programs could replace DLLs they have loaded
+  if prefix_session_active; then
+    printf 'VC++ runtime: programs run in %s, installing next time\n' "$PREFIX" >&2
+    return 0
+  fi
+
+  log="$WRAPPER_CACHE_DIR/logs/vcredist.log"
+  mkdir -p "$(dirname "$log")"
+  printf 'VC++ runtime: installing %s from %s\n' "$version" "$dir" >&2
+  notify_progress "Shorin Proton Wrapper" "$(download_message vcredist "$version")"
+  for arch in x64 x86; do
+    status=0
+    if [[ "$RESOLVED_RUNNER_TYPE" == "proton" ]]; then
+      run_proton_command "$RESOLVED_RUNNER_PATH" run "$dir/VC_redist.$arch.exe" /install /quiet /norestart >> "$log" 2>&1 || status=$?
+    else
+      run_wine_command "$RESOLVED_RUNNER_PATH" "$dir/VC_redist.$arch.exe" /install /quiet /norestart >> "$log" 2>&1 || status=$?
+    fi
+    printf 'VC_redist.%s.exe %s: exit %s\n' "$arch" "$version" "$status" >> "$log"
+  done
+  # Wine writes the registry out when its wineserver exits
+  wait_wineserver_exit
+  if prefix_has_vcredist "$version"; then
+    rm -f "$(vcredist_failed_file)"
+    notify_info "$(download_message done "Microsoft Visual C++ $version")"
+  elif prefix_wineserver_pid > /dev/null; then
+    printf 'VC++ runtime: the registry is not written out yet, checking next time\n' >&2
+  else
+    printf '%s %s\n' "$version" "$RESOLVED_RUNNER_PATH" > "$(vcredist_failed_file)"
+    printf 'VC++ runtime: %s was not installed, see %s\n' "$version" "$log" >&2
+    notify_error "$(download_message vcredist_failed "$version")"$'\n'"$log"
+  fi
+}
+
 apply_cached_env_vars() {
   local encoded="$1" tmp status
   CACHED_ENV=()
@@ -3203,6 +3350,7 @@ run_target() {
   # a program started meanwhile waits until the prefix exists
   session_lock
   ensure_initialized
+  ensure_vcredist
   record_default_association "$TARGET"
   setup_run_logging
   session_prepare
@@ -3257,6 +3405,15 @@ runtime_status() {
   fi
 }
 
+# The prefix's VC++ runtime of each architecture: Microsoft's version, or
+# the label for Wine's own.
+vcredist_status() {
+  local wine="$1" x64 x86
+  x64="$(prefix_vcredist_version x64)"
+  x86="$(prefix_vcredist_version x86)"
+  printf 'x64 %s, x86 %s\n' "${x64:-$wine}" "${x86:-$wine}"
+}
+
 show_status() {
   local runner_type runner_path initialized install_dir download_dir lang runtime netns session
   PREFIX="$(expand_path "$PREFIX")"
@@ -3287,6 +3444,7 @@ show_status() {
     printf '运行器类型: %s\n' "$runner_type"
     printf '运行器:     %s\n' "$runner_path"
     printf 'Steam 运行时: %s\n' "$runtime"
+    printf 'VC++ 运行库: %s\n' "$(vcredist_status "Wine 自带")"
     printf '独立网络:   %s\n' "$netns"
     printf '会话:       %s\n' "$session"
     printf '下载目录:   %s\n' "$download_dir"
@@ -3298,6 +3456,7 @@ show_status() {
     printf 'Runner type: %s\n' "$runner_type"
     printf 'Runner:      %s\n' "$runner_path"
     printf 'Runtime:     %s\n' "$runtime"
+    printf 'VC++:        %s\n' "$(vcredist_status "Wine's own")"
     printf 'Netns:       %s\n' "$netns"
     printf 'Session:     %s\n' "$session"
     printf 'Download:    %s\n' "$download_dir"
@@ -4453,6 +4612,7 @@ case "$ACTION" in
     ;;
   init)
     init_prefix
+    ensure_vcredist
     ;;
   winecfg)
     open_winecfg
