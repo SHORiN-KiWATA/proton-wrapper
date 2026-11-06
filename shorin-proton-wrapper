@@ -2430,7 +2430,7 @@ namespace_mac_address() {
 
 # Start the prefix's network namespace and its keeper; sets SESSION_KEEPER_PID.
 session_start() {
-  local dir="$1" log mac i pidns
+  local dir="$1" log mac i pidns help inbound
   command -v pasta > /dev/null 2>&1 || die_visible "$(session_message no_pasta)"
   command -v nsenter > /dev/null 2>&1 || die_visible "$(session_message no_nsenter)"
   rm -f "$dir/keeper.pid" "$dir/netns" "$dir/userns" "$dir/bus" "$dir/launch"
@@ -2439,8 +2439,16 @@ session_start() {
   mac="$(namespace_mac_address)"
   # newer pasta starts the command in a new PID namespace unless told not to;
   # older ones never do and don't know the option
+  help="$(pasta --help 2>&1 || true)"
   pidns=()
-  [[ "$(pasta --help 2>&1 || true)" == *--no-pidns* ]] && pidns=(--no-pidns)
+  [[ "$help" == *--no-pidns* ]] && pidns=(--no-pidns)
+  # Programs waiting for a browser login (Battle.net, ...) listen on the
+  # namespace's 127.0.0.1 only, but pasta hands what reaches the host's
+  # loopback to the namespace's own address, and IPv6 ones to its ::1:
+  # forward IPv4 only, so the browser's localhost falls back from ::1 to
+  # 127.0.0.1, and keep loopback as loopback in the namespace.
+  inbound=()
+  [[ "$help" == *--host-lo-to-ns-lo* ]] && inbound=(-t 0.0.0.0/auto --host-lo-to-ns-lo)
   printf -- '--- %s %s\n' "$(date '+%F %T')" "$PREFIX" >> "$log"
   # pasta forwards automatically only the host's ports outside the ephemeral
   # range; the Steam client's 57343, in it, the keeper forwards itself while
@@ -2448,7 +2456,7 @@ session_start() {
   # LD_PRELOAD, which the namespace's own programs must not get.
   setsid env -u SHORIN_PROTON_WRAPPER_APP_ID -u SHORIN_PROTON_WRAPPER_APP_PATH -u SHORIN_PROTON_WRAPPER_LOG -u LD_PRELOAD \
     SHORIN_PROTON_WRAPPER_PREFIX="$PREFIX" \
-    pasta --config-net --ns-mac-addr "$mac" -T auto -f "${pidns[@]}" -- "$SELF_PATH" --session-keeper "$dir" \
+    pasta --config-net --ns-mac-addr "$mac" -T auto "${inbound[@]}" -f "${pidns[@]}" -- "$SELF_PATH" --session-keeper "$dir" \
     >> "$log" 2>&1 < /dev/null {SESSION_LOCK_FD}>&- &
   for ((i = 0; i < 75; i++)); do
     if SESSION_KEEPER_PID="$(session_keeper_pid "$dir")"; then
