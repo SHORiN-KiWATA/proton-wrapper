@@ -2430,7 +2430,7 @@ namespace_mac_address() {
 
 # Start the prefix's network namespace and its keeper; sets SESSION_KEEPER_PID.
 session_start() {
-  local dir="$1" log mac i pidns help inbound
+  local dir="$1" log mac i pidns help inbound ports
   command -v pasta > /dev/null 2>&1 || die_visible "$(session_message no_pasta)"
   command -v nsenter > /dev/null 2>&1 || die_visible "$(session_message no_nsenter)"
   rm -f "$dir/keeper.pid" "$dir/netns" "$dir/userns" "$dir/bus" "$dir/launch"
@@ -2447,8 +2447,14 @@ session_start() {
   # loopback to the namespace's own address, and IPv6 ones to its ::1:
   # forward IPv4 only, so the browser's localhost falls back from ::1 to
   # 127.0.0.1, and keep loopback as loopback in the namespace.
+  # "auto" alone leaves out the ephemeral port range (32768-60999 as a
+  # rule), and some programs listen for the browser in it: a range with
+  # "auto" forwards each of its ports that is bound in the namespace. Not
+  # the Steam client's, which the keeper passes the other way.
   inbound=()
-  [[ "$help" == *--host-lo-to-ns-lo* ]] && inbound=(-t 0.0.0.0/auto --host-lo-to-ns-lo)
+  ports=auto
+  [[ "$help" == *,auto* ]] && ports='1-65535,~57343,auto'
+  [[ "$help" == *--host-lo-to-ns-lo* ]] && inbound=(-t "0.0.0.0/$ports" --host-lo-to-ns-lo)
   printf -- '--- %s %s\n' "$(date '+%F %T')" "$PREFIX" >> "$log"
   # pasta forwards automatically only the host's ports outside the ephemeral
   # range; the Steam client's 57343, in it, the keeper forwards itself while
